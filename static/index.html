@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeyLineBook / 地脉簿</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">簿</div>
+        <div>
+          <strong>地脉簿</strong>
+          <span>LeyLineBook · 本地离线版</span>
+        </div>
+      </div>
+      <nav aria-label="主菜单">
+        <button class="nav-item active" data-view="today"><span>今日任务</span><b id="navRemaining">0</b></button>
+        <button class="nav-item" data-view="accounts"><span>号主与任务</span></button>
+        <button class="nav-item" data-view="activities"><span>活动任务</span></button>
+        <button class="nav-item" data-view="story"><span>剧情任务</span><b id="storyRemaining">0</b></button>
+        <button class="nav-item" data-view="history"><span>历史记录</span></button>
+        <button class="nav-item" data-view="settings"><span>设置与备份</span></button>
+      </nav>
+      <div class="local-note">数据仅保存在这台电脑</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="eyebrow">任务总览</p>
+          <h1 id="pageTitle">今日任务</h1>
+        </div>
+        <div class="topbar-actions" id="todayControls">
+          <button class="button ghost" id="goToday">回到今天</button>
+          <input type="date" id="selectedDate" aria-label="选择记录日期">
+        </div>
+      </header>
+
+      <section class="view active" id="view-today">
+        <div class="summary-grid">
+          <article class="summary-card primary"><span>总进度</span><strong id="progressText">0 / 0</strong><div class="progress"><i id="progressBar"></i></div></article>
+          <article class="summary-card"><span>每日进度</span><strong id="dailyProgressText">0 / 0</strong><div class="progress secondary-progress"><i id="dailyProgressBar"></i></div></article>
+          <article class="summary-card"><span>待完成</span><strong id="remainingCount">0</strong><small>件任务</small></article>
+        </div>
+
+        <div class="section-toolbar">
+          <div>
+            <h2>应做任务</h2>
+            <p>每日任务和已到期的周期任务</p>
+          </div>
+          <button class="button primary" id="completeAll">全部标记完成</button>
+        </div>
+        <div id="dueTaskGroups" class="task-groups"></div>
+
+        <div id="cooldownSection" class="hidden">
+          <div class="section-toolbar secondary-toolbar cooldown-toolbar">
+            <div>
+              <h2>冷却中</h2>
+              <p>质变仪满 168 小时后会自动进入应做任务</p>
+            </div>
+          </div>
+          <div id="cooldownTaskGroups" class="task-groups compact"></div>
+        </div>
+
+        <div class="section-toolbar secondary-toolbar">
+          <div>
+            <h2>专项记录</h2>
+            <p>深境螺旋、剧诗、危战等按需要记录，不计入今日待办</p>
+          </div>
+        </div>
+        <div id="manualTaskGroups" class="task-groups compact"></div>
+      </section>
+
+      <section class="view" id="view-accounts">
+        <div class="section-toolbar">
+          <div><h2>号主与委托</h2><p>维护号主，并为每个号主配置需要记录的任务</p></div>
+          <button class="button primary" id="addAccount">新增号主</button>
+        </div>
+        <div id="accountCards" class="account-grid"></div>
+      </section>
+
+      <section class="view" id="view-activities">
+        <div class="section-toolbar">
+          <div><h2>活动任务</h2><p>创建活动后，可在「号主与任务」为每个号主开启</p></div>
+        </div>
+        <div class="activity-creator">
+          <input id="activityNameInput" maxlength="100" placeholder="活动名称（选填，默认使用活动类型）">
+          <div class="activity-cat-row">
+            <button class="activity-cat-btn" data-activity-category="大活动">大活动</button>
+            <button class="activity-cat-btn" data-activity-category="小活动">小活动</button>
+          </div>
+          <div class="activity-dur-row hidden" id="activityDurRow">
+            <span class="activity-dur-label">选择时长</span>
+            <div class="activity-dur-btns" id="activityDurBtns"></div>
+          </div>
+          <div class="activity-date-row hidden" id="activityDateRow">
+            <label class="activity-date-label">开始日期<input type="date" id="activityStartDate"><span class="activity-time-badge">10:00</span></label>
+            <span class="activity-date-arrow">→</span>
+            <span class="activity-date-end" id="activityEndDate">—</span>
+          </div>
+          <button class="button primary" id="addActivityBtn" disabled>添加活动</button>
+        </div>
+        <div id="activityList" class="activity-list"></div>
+      </section>
+
+      <section class="view" id="view-story">
+        <div class="section-toolbar">
+          <div><h2>剧情任务</h2><p>记录魔神任务、传说任务和世界任务；奖励到期后任务仍会保留</p></div>
+        </div>
+        <div class="story-creator">
+          <input id="storyOwner" list="storyOwnerOptions" maxlength="100" placeholder="选择或输入号主" aria-label="剧情任务所属号主">
+          <datalist id="storyOwnerOptions"></datalist>
+          <input id="storyName" maxlength="100" placeholder="任务名称（选填，默认使用任务类型）">
+          <div class="story-type-row" role="group" aria-label="剧情任务类型">
+            <button type="button" class="story-type-btn selected" data-story-type="archon">魔神任务</button>
+            <button type="button" class="story-type-btn" data-story-type="legend">传说任务</button>
+            <button type="button" class="story-type-btn" data-story-type="world">世界任务</button>
+          </div>
+          <label class="story-bonus-option"><input type="checkbox" id="storyHasBonus" checked> 有额外奖励期限</label>
+          <div class="story-deadline-preview" id="storyDeadlinePreview"></div>
+          <button type="button" class="button primary" id="addStoryTask">添加剧情任务</button>
+        </div>
+        <div id="storyTaskList" class="story-task-list"></div>
+      </section>
+
+      <section class="view" id="view-history">
+        <div class="section-toolbar">
+          <div><h2>完成历史</h2><p>查看补记、日常和专项任务的完成记录</p></div>
+          <div class="date-range">
+            <button type="button" class="button ghost history-quick" data-history-months="1">最近一个月</button>
+            <button type="button" class="button ghost history-quick" data-history-months="6">最近半年</button>
+            <input type="date" id="historyStart" aria-label="历史开始日期">
+            <span>至</span>
+            <input type="date" id="historyEnd" aria-label="历史结束日期">
+            <select id="historyAccount" aria-label="按号主筛选"></select>
+            <button class="button ghost" id="loadHistory">查询</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>记录日期</th><th>号主</th><th>任务</th><th>完成时间</th></tr></thead>
+            <tbody id="historyRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="settings-card theme-card">
+          <span class="settings-icon">色</span>
+          <div>
+            <h2>界面主色调</h2>
+            <p>选择后立即生效，下次打开会保持当前选择。</p>
+            <div class="theme-options" role="group" aria-label="界面主色调">
+              <button class="theme-option" data-theme-option="black" aria-pressed="false"><i class="theme-swatch black"></i>黑色</button>
+              <button class="theme-option" data-theme-option="white" aria-pressed="false"><i class="theme-swatch white"></i>白色</button>
+              <button class="theme-option" data-theme-option="green" aria-pressed="false"><i class="theme-swatch green"></i>绿色</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-card schedule-card">
+          <span class="settings-icon">版</span>
+          <div>
+            <h2>危战版本周期</h2>
+            <p id="warWindowText">根据原神42天大版本周期自动计算开放和关闭时间。</p>
+            <div class="settings-form">
+              <label>版本日期锚点（星期三）<input type="date" id="versionStartDate"></label>
+              <button class="button primary" id="saveVersionDate">校准日期</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-card">
+          <span class="settings-icon">存</span>
+          <div><h2>导出备份</h2><p>将号主、任务和完成历史导出成 JSON 文件，便于额外留档。</p></div>
+          <button class="button primary" id="exportBackup">导出备份</button>
+        </div>
+        <div class="settings-card warning">
+          <span class="settings-icon">安</span>
+          <div><h2>账号安全</h2><p>本工具只用于记录任务，不要在备注中保存密码、验证码或登录凭据。</p></div>
+        </div>
+        <div class="settings-card danger-card">
+          <span class="settings-icon">关</span>
+          <div><h2>关闭程序</h2><p>停止后台记录服务。已经保存的任务和历史不会丢失。</p></div>
+          <button class="button danger" id="shutdownApp">关闭程序</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="accountDialog">
+    <form method="dialog" id="accountForm">
+      <div class="dialog-head"><div><p class="eyebrow">账号资料</p><h2 id="accountDialogTitle">新增号主</h2></div><button type="button" class="icon-button" data-close-dialog="accountDialog" aria-label="关闭">×</button></div>
+      <input type="hidden" id="accountId">
+      <label>号主名称<input id="accountName" maxlength="100" required placeholder="例如：雪惊霄"></label>
+      <label>联系人/分组<input id="accountOwner" maxlength="100" placeholder="可选"></label>
+      <label>截止日期
+        <div class="proxy-date-picker">
+          <div class="proxy-quick-btns">
+            <button type="button" class="proxy-quick-btn" data-proxy-days="7">一周</button>
+            <button type="button" class="proxy-quick-btn" data-proxy-days="30">一个月</button>
+            <button type="button" class="proxy-quick-btn" data-proxy-days="60">两个月</button>
+            <button type="button" class="proxy-quick-btn" data-proxy-days="180">半年</button>
+          </div>
+          <div class="proxy-date-row">
+            <input type="date" id="accountProxyUntil" required>
+            <span class="proxy-days-left" id="proxyDaysLeft"></span>
+          </div>
+        </div>
+      </label>
+      <label>备注<textarea id="accountNotes" maxlength="500" rows="3" placeholder="可选，不要填写密码"></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="accountDialog">取消</button><button type="submit" class="button primary" id="saveAccount">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="taskDialog">
+    <form method="dialog" id="taskForm">
+      <div class="dialog-head"><div><p class="eyebrow">任务配置</p><h2 id="taskDialogTitle">新增任务</h2></div><button type="button" class="icon-button" data-close-dialog="taskDialog" aria-label="关闭">×</button></div>
+      <input type="hidden" id="taskId">
+      <label>所属号主<select id="taskAccount" required></select></label>
+      <label>任务名称<input id="taskName" maxlength="100" required placeholder="例如：每日+好感"></label>
+      <label>记录方式
+        <select id="taskRecurrence">
+          <option value="daily">每日出现</option>
+          <option value="weekly">每周一 04:00 刷新</option>
+          <option value="interval">固定间隔</option>
+          <option value="monthly">每月固定日期</option>
+          <option value="version">版本周期</option>
+          <option value="manual">随时记录</option>
+          <option value="once">一次性任务</option>
+        </select>
+      </label>
+      <div class="inline-fields hidden" id="scheduleFields">
+        <label id="intervalField">间隔天数<input type="number" id="taskInterval" min="1" max="365" value="7"></label>
+        <label id="monthlyField">每月几日刷新<input type="number" id="taskMonthlyDay" min="1" max="28" value="1"></label>
+        <label>首次/下次到期<input type="date" id="taskNextDue"></label>
+      </div>
+      <p class="form-hint hidden" id="versionHint">版本周期根据官方锚点每42天自动滚动。</p>
+      <label>备注<textarea id="taskNotes" maxlength="500" rows="3" placeholder="可选"></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="taskDialog">取消</button><button type="submit" class="button primary" id="saveTask">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="taskNoteDialog" class="task-note-dialog">
+    <form method="dialog" id="taskNoteForm">
+      <div class="dialog-head">
+        <div><p class="eyebrow">任务设置</p><h2 id="taskNoteDialogTitle">任务备注</h2></div>
+        <button type="button" class="icon-button" data-close-dialog="taskNoteDialog" aria-label="关闭">×</button>
+      </div>
+      <p class="note-dialog-hint">点击保存后，任务和备注才会生效；取消不会修改当前配置。</p>
+      <div id="presetNoteSection" class="note-editor-section">
+        <strong>可选备注</strong>
+        <div class="tag-list" id="presetNoteTags"></div>
+      </div>
+      <div class="note-editor-section">
+        <strong>其他备注</strong>
+        <div class="task-note-entry">
+          <input id="customTaskNote" maxlength="40" placeholder="输入备注内容">
+          <button type="button" class="button ghost" id="addCustomTaskNote">添加</button>
+        </div>
+        <div class="tag-list selected-note-tags" id="selectedNoteTags"></div>
+      </div>
+      <div class="dialog-actions split-actions">
+        <button type="button" class="button danger" id="removeConfiguredTask">移除此任务</button>
+        <span></span>
+        <button type="button" class="button ghost" data-close-dialog="taskNoteDialog">取消</button>
+        <button type="submit" class="button primary">保存任务</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog" id="confirmForm">
+      <div class="confirm-mark" aria-hidden="true">!</div>
+      <div class="confirm-copy">
+        <p class="eyebrow">操作确认</p>
+        <h2 id="confirmDialogTitle">请确认</h2>
+        <p id="confirmDialogMessage" class="confirm-message"></p>
+      </div>
+      <div class="dialog-actions">
+        <button type="submit" class="button ghost" value="cancel">取消</button>
+        <button type="submit" class="button danger" id="confirmDialogSubmit" value="confirm">确认</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="transformerUsageDialog" class="usage-time-dialog">
+    <form method="dialog" id="transformerUsageForm">
+      <div class="dialog-head">
+        <div><p class="eyebrow">记录完成</p><h2>质变仪使用时间</h2></div>
+        <button type="button" class="icon-button" data-close-dialog="transformerUsageDialog" aria-label="关闭">×</button>
+      </div>
+      <p class="note-dialog-hint">下次可用时间将从实际使用时间开始计算 168 小时。</p>
+      <label>实际使用时间<input type="datetime-local" id="transformerUsedAt" required></label>
+      <div class="dialog-actions">
+        <button type="button" class="button ghost" data-close-dialog="transformerUsageDialog">取消</button>
+        <button type="submit" class="button primary">确认完成</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <div class="shutdown-screen hidden" id="shutdownScreen">
+    <div><h1>程序已关闭</h1><p>数据已保存，可以直接关闭这个页面。</p></div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
