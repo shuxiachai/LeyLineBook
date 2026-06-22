@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import mimetypes
 import os
@@ -1700,18 +1701,31 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.dispatch("DELETE")
 
 
+def create_http_server(port: int) -> tuple[ExclusiveThreadingHTTPServer, int]:
+    try:
+        server = ExclusiveThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+    except OSError as error:
+        recoverable_errors = {errno.EACCES, errno.EADDRINUSE}
+        if error.errno not in recoverable_errors and getattr(error, "winerror", None) not in {10013, 10048}:
+            raise
+        print(f"Port {port} is unavailable; selecting another local port.", flush=True)
+        server = ExclusiveThreadingHTTPServer(("127.0.0.1", 0), RequestHandler)
+    return server, int(server.server_address[1])
+
+
 def run_server(port: int, open_browser: bool) -> None:
     if sys.stdout is None:
         sys.stdout = LOG_PATH.open("a", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = LOG_PATH.open("a", encoding="utf-8")
     initialize_database()
-    server = ExclusiveThreadingHTTPServer(("127.0.0.1", port), RequestHandler)
+    server, port = create_http_server(port)
     url = f"http://127.0.0.1:{port}"
     if open_browser:
         threading.Timer(0.7, lambda: webbrowser.open(url)).start()
     print(f"LeyLineBook / 地脉簿已启动：{url}")
     print("关闭此窗口即可停止程序。")
+    sys.stdout.flush()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
