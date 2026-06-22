@@ -1,4 +1,4 @@
-# LeyLineBook v0.1.0
+# LeyLineBook v1.1.0
 
 首个公开发布版本。
 
@@ -14,7 +14,7 @@
 
 ## Windows 使用方法
 
-1. 下载 `LeyLineBook-v0.1.0-Windows-x64.zip`。
+1. 下载 `LeyLineBook-v1.1.0-Windows-x64.zip`。
 2. 解压整个 ZIP，不要单独移动 `LeyLineBook.exe`。
 3. 双击 `LeyLineBook.exe`，程序会自动打开浏览器。
 4. 在“设置与备份”中可以选择本地角色图片、导出备份或关闭程序。
