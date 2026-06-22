@@ -160,6 +160,10 @@
               <button class="theme-option" data-theme-option="black" aria-pressed="false"><i class="theme-swatch black"></i>黑色</button>
               <button class="theme-option" data-theme-option="white" aria-pressed="false"><i class="theme-swatch white"></i>白色</button>
               <button class="theme-option" data-theme-option="green" aria-pressed="false"><i class="theme-swatch green"></i>绿色</button>
+              <button class="theme-option" data-theme-option="blue" aria-pressed="false"><i class="theme-swatch blue"></i>蓝色</button>
+              <button class="theme-option" data-theme-option="purple" aria-pressed="false"><i class="theme-swatch purple"></i>紫色</button>
+              <button class="theme-option" data-theme-option="rose" aria-pressed="false"><i class="theme-swatch rose"></i>玫瑰</button>
+              <button class="theme-option" data-theme-option="amber" aria-pressed="false"><i class="theme-swatch amber"></i>琥珀</button>
             </div>
           </div>
         </div>
@@ -202,12 +206,23 @@
         </div>
         <div class="settings-card">
           <span class="settings-icon">存</span>
-          <div><h2>导出备份</h2><p>将号主、任务和完成历史导出成 JSON 文件，便于额外留档。</p></div>
+          <div><h2>导出备份</h2><p>将号主、任务、活动和完成历史导出成 JSON 文件，可用于数据迁移或留档。</p></div>
           <button class="button primary" id="exportBackup">导出备份</button>
+        </div>
+        <div class="settings-card">
+          <span class="settings-icon">入</span>
+          <div><h2>导入备份</h2><p>从之前导出的 JSON 文件还原数据，当前所有数据将被替换。账号密码因加密绑定本机，导入后需重新填写。</p></div>
+          <input type="file" id="importFileInput" accept=".json" hidden>
+          <button class="button ghost" id="importBackupBtn">选择文件</button>
         </div>
         <div class="settings-card warning">
           <span class="settings-icon">安</span>
           <div><h2>账号安全</h2><p>账号密码请通过号主列表中的「密」按钮安全存储，使用 Windows DPAPI 加密，备份导出时不含密码。请勿在备注字段中直接填写密码或验证码。</p></div>
+        </div>
+        <div class="settings-card danger-card">
+          <span class="settings-icon">清</span>
+          <div><h2>清空数据库</h2><p>删除全部号主、任务和历史记录，恢复初始状态。操作不可撤销，建议先导出备份。</p></div>
+          <button class="button danger" id="resetDatabaseBtn">清空全部数据</button>
         </div>
         <div class="settings-card danger-card">
           <span class="settings-icon">关</span>
