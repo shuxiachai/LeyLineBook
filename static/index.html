@@ -8,6 +8,9 @@
 </head>
 <body>
   <div class="app-shell">
+    <div class="character-backdrop" id="characterBackdrop" aria-hidden="true">
+      <img id="characterBackdropImage" alt="">
+    </div>
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark">簿</div>
@@ -157,6 +160,32 @@
               <button class="theme-option" data-theme-option="black" aria-pressed="false"><i class="theme-swatch black"></i>黑色</button>
               <button class="theme-option" data-theme-option="white" aria-pressed="false"><i class="theme-swatch white"></i>白色</button>
               <button class="theme-option" data-theme-option="green" aria-pressed="false"><i class="theme-swatch green"></i>绿色</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-card character-settings-card">
+          <span class="settings-icon">景</span>
+          <div>
+            <h2>角色背景</h2>
+            <p>选择图片后自动进入角色主题，界面会根据图片明暗和主色调整。点击黑、白、绿主题即可恢复纯色界面。</p>
+            <div class="character-upload-row">
+              <div class="character-preview" id="characterPreview">
+                <img id="characterPreviewImage" alt="角色背景预览">
+                <span id="characterPreviewEmpty">尚未选择图片</span>
+              </div>
+              <div class="character-background-controls">
+                <div class="character-background-buttons">
+                  <input type="file" id="characterImageInput" accept="image/png,image/jpeg,image/webp" hidden>
+                  <button class="button primary" type="button" id="chooseCharacterImage">选择图片</button>
+                  <button class="button ghost" type="button" id="enableCharacterTheme" disabled>启用角色主题</button>
+                  <button class="button ghost" type="button" id="removeCharacterImage" disabled>移除背景</button>
+                </div>
+                <label class="opacity-control" for="characterOpacity">
+                  <span>背景强度 <output id="characterOpacityValue">72%</output></span>
+                  <input type="range" id="characterOpacity" min="20" max="100" value="72">
+                </label>
+                <small class="character-storage-note" id="characterStorageNote">支持 PNG、JPEG、WebP，最大 12 MB。</small>
+              </div>
             </div>
           </div>
         </div>
