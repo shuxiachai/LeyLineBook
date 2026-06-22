@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import ctypes
 import errno
 import json
 import mimetypes
@@ -47,6 +49,9 @@ NOTE_TAGS = ("好感队", "委托")
 DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理"))
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
+HEARTBEAT_TIMEOUT = 90
+
+_last_heartbeat: float = 0.0
 
 
 def now_text() -> str:
@@ -55,6 +60,38 @@ def now_text() -> str:
 
 def today_text() -> str:
     return date.today().isoformat()
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.c_ulong), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def dpapi_protect(plaintext: str) -> str:
+    data = plaintext.encode("utf-8")
+    buf = ctypes.create_string_buffer(data, len(data))
+    in_blob = _DataBlob(len(data), buf)
+    out_blob = _DataBlob()
+    if not ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        raise OSError("DPAPI 加密失败")
+    result = bytes(ctypes.string_at(out_blob.pbData, out_blob.cbData))
+    ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+    return base64.b64encode(result).decode("ascii")
+
+
+def dpapi_unprotect(ciphertext: str) -> str:
+    data = base64.b64decode(ciphertext)
+    buf = ctypes.create_string_buffer(data, len(data))
+    in_blob = _DataBlob(len(data), buf)
+    out_blob = _DataBlob()
+    if not ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob)
+    ):
+        raise OSError("凭据解密失败，可能数据来自其他用户或机器")
+    result = ctypes.string_at(out_blob.pbData, out_blob.cbData).decode("utf-8")
+    ctypes.windll.kernel32.LocalFree(out_blob.pbData)
+    return result
 
 
 @contextmanager
@@ -420,6 +457,8 @@ def migrate_accounts_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE accounts ADD COLUMN proxy_until TEXT")
     if "deleted" not in columns:
         connection.execute("ALTER TABLE accounts ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0")
+    if "credentials" not in columns:
+        connection.execute("ALTER TABLE accounts ADD COLUMN credentials TEXT")
 
 
 def migrate_custom_tags_schema(connection: sqlite3.Connection) -> None:
@@ -650,20 +689,21 @@ def load_state(selected_date: str) -> dict:
     cleanup_expired_activities()
     date.fromisoformat(selected_date)
     with db_connection() as connection:
-        accounts = [
-            row_to_dict(row)
-            for row in connection.execute(
-                """
-                SELECT a.*,
-                       COUNT(t.id) AS task_count
-                FROM accounts a
-                LEFT JOIN tasks t ON t.account_id = a.id AND t.active = 1
-                WHERE a.deleted = 0
-                GROUP BY a.id
-                ORDER BY a.active DESC, a.sort_order, a.id
-                """
-            )
-        ]
+        accounts = []
+        for row in connection.execute(
+            """
+            SELECT a.*,
+                   COUNT(t.id) AS task_count
+            FROM accounts a
+            LEFT JOIN tasks t ON t.account_id = a.id AND t.active = 1
+            WHERE a.deleted = 0
+            GROUP BY a.id
+            ORDER BY a.active DESC, a.sort_order, a.id
+            """
+        ):
+            account = row_to_dict(row)
+            account.pop("credentials", None)
+            accounts.append(account)
         tasks = [
             row_to_dict(row)
             for row in connection.execute(
@@ -871,9 +911,11 @@ def create_account(payload: dict) -> dict:
                 """,
                 (account_id, str(payload["dailyTask"])[:100], now_text()),
             )
-        return row_to_dict(
+        result = row_to_dict(
             connection.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
         )
+        result.pop("credentials", None)
+        return result
 
 
 def update_account(account_id: int, payload: dict) -> None:
@@ -888,6 +930,46 @@ def update_account(account_id: int, payload: dict) -> None:
         )
         if cursor.rowcount == 0:
             raise LookupError("没有找到该号主")
+
+
+def get_account_credentials(account_id: int) -> dict:
+    with db_connection() as connection:
+        row = connection.execute(
+            "SELECT credentials FROM accounts WHERE id = ? AND deleted = 0", (account_id,)
+        ).fetchone()
+        if not row:
+            raise LookupError("没有找到该号主")
+        encrypted = row["credentials"]
+    if not encrypted:
+        return {"username": "", "password": "", "note": ""}
+    try:
+        decrypted = dpapi_unprotect(encrypted)
+        data = json.loads(decrypted)
+        return {
+            "username": str(data.get("username", "")),
+            "password": str(data.get("password", "")),
+            "note": str(data.get("note", "")),
+        }
+    except Exception as error:
+        raise ValueError(f"凭据解密失败：{error}") from error
+
+
+def set_account_credentials(account_id: int, payload: dict) -> None:
+    username = str(payload.get("username", "")).strip()[:200]
+    password = str(payload.get("password", "")).strip()[:500]
+    note = str(payload.get("note", "")).strip()[:200]
+    with db_connection() as connection:
+        account = connection.execute(
+            "SELECT id FROM accounts WHERE id = ? AND deleted = 0", (account_id,)
+        ).fetchone()
+        if not account:
+            raise LookupError("没有找到该号主")
+        if not username and not password and not note:
+            connection.execute("UPDATE accounts SET credentials = NULL WHERE id = ?", (account_id,))
+            return
+        data = json.dumps({"username": username, "password": password, "note": note}, ensure_ascii=False)
+        encrypted = dpapi_protect(data)
+        connection.execute("UPDATE accounts SET credentials = ? WHERE id = ?", (encrypted, account_id))
 
 
 def archive_account(account_id: int) -> None:
@@ -1527,6 +1609,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.serve_static(path)
 
     def handle_api(self, method: str, path: str, query: dict) -> None:
+        if method == "GET" and path == "/api/heartbeat":
+            global _last_heartbeat
+            _last_heartbeat = time.time()
+            self.send_json(None)
+            return
         if method == "GET" and path == "/api/state":
             selected_date = query.get("date", [today_text()])[0]
             self.send_json(load_state(selected_date))
@@ -1545,7 +1632,10 @@ class RequestHandler(BaseHTTPRequestHandler):
             with db_connection() as connection:
                 data = {
                     "exportedAt": now_text(),
-                    "accounts": [row_to_dict(row) for row in connection.execute("SELECT * FROM accounts")],
+                    "accounts": [
+                        {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
+                        for row in connection.execute("SELECT * FROM accounts")
+                    ],
                     "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
                     "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
                     "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
@@ -1591,6 +1681,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/accounts/(\d+)/group-notes", path)
         if match and method == "POST":
             set_account_group_note(int(match.group(1)), payload)
+            self.send_json(None)
+            return
+        match = re.fullmatch(r"/api/accounts/(\d+)/credentials", path)
+        if match and method == "GET":
+            self.send_json(get_account_credentials(int(match.group(1))))
+            return
+        if match and method == "PUT":
+            set_account_credentials(int(match.group(1)), payload)
+            self.send_json(None)
+            return
+        if match and method == "DELETE":
+            set_account_credentials(int(match.group(1)), {})
             self.send_json(None)
             return
         if method == "POST" and path == "/api/accounts/reorder":
@@ -1713,13 +1815,24 @@ def create_http_server(port: int) -> tuple[ExclusiveThreadingHTTPServer, int]:
     return server, int(server.server_address[1])
 
 
+def heartbeat_watchdog() -> None:
+    while True:
+        time.sleep(5)
+        if _last_heartbeat and time.time() - _last_heartbeat > HEARTBEAT_TIMEOUT:
+            print("心跳超时，程序自动退出。", flush=True)
+            os._exit(0)
+
+
 def run_server(port: int, open_browser: bool) -> None:
     if sys.stdout is None:
         sys.stdout = LOG_PATH.open("a", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = LOG_PATH.open("a", encoding="utf-8")
+    global _last_heartbeat
     initialize_database()
     server, port = create_http_server(port)
+    _last_heartbeat = time.time()
+    threading.Thread(target=heartbeat_watchdog, daemon=True).start()
     url = f"http://127.0.0.1:{port}"
     if open_browser:
         threading.Timer(0.7, lambda: webbrowser.open(url)).start()

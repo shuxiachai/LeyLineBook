@@ -99,6 +99,31 @@ class TaskRecorderTest(unittest.TestCase):
             record_count = connection.execute("SELECT COUNT(*) FROM task_records").fetchone()[0]
         self.assertEqual((account_count, task_count, record_count), (0, 0, 0))
 
+    def test_account_credentials_are_encrypted_and_hidden_from_state(self):
+        account = create_test_account({"name": "凭据测试号主"})
+        with patch.object(app, "dpapi_protect", return_value="encrypted-payload") as protect:
+            app.set_account_credentials(
+                account["id"],
+                {"username": "player@example.com", "password": "secret", "note": "天空岛"},
+            )
+        protect.assert_called_once()
+
+        with app.db_connection() as connection:
+            stored = connection.execute(
+                "SELECT credentials FROM accounts WHERE id = ?", (account["id"],)
+            ).fetchone()[0]
+        self.assertEqual(stored, "encrypted-payload")
+
+        decrypted = '{"username":"player@example.com","password":"secret","note":"天空岛"}'
+        with patch.object(app, "dpapi_unprotect", return_value=decrypted):
+            credentials = app.get_account_credentials(account["id"])
+        self.assertEqual(credentials["password"], "secret")
+
+        state_account = next(
+            item for item in app.load_state("2026-06-22")["accounts"] if item["id"] == account["id"]
+        )
+        self.assertNotIn("credentials", state_account)
+
     def test_existing_database_schema_adds_weekly_without_losing_data(self):
         app.DB_PATH = Path(self.temp_dir.name) / "legacy.db"
         with sqlite3.connect(app.DB_PATH) as connection:
