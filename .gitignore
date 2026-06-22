@@ -7,6 +7,7 @@ __pycache__/
 .codex/
 .agents/
 .Rhistory
+character-images/
 
 build/
 dist/
@@ -16,3 +17,5 @@ task_records.db
 task_records*.db
 task_recorder.log
 *.log
+
+!demo/task_records.demo.db
