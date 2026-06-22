@@ -1,9 +1,11 @@
+import errno
 import sqlite3
 import sys
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -746,6 +748,24 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertEqual(columns["account_id"][3], 0)
         self.assertIn("owner_name", columns)
         self.assertEqual((preserved["name"], preserved["account_id"], preserved["owner_name"]), ("旧剧情任务", account["id"], ""))
+
+
+    def test_server_uses_available_port_when_preferred_port_is_denied(self):
+        class FakeServer:
+            attempts = []
+
+            def __init__(self, address, _handler):
+                self.attempts.append(address)
+                if address[1] == 8765:
+                    raise OSError(errno.EACCES, "port denied")
+                self.server_address = (address[0], 49152)
+
+        with patch.object(app, "ExclusiveThreadingHTTPServer", FakeServer):
+            server, selected_port = app.create_http_server(8765)
+
+        self.assertIsInstance(server, FakeServer)
+        self.assertEqual(selected_port, 49152)
+        self.assertEqual(FakeServer.attempts, [("127.0.0.1", 8765), ("127.0.0.1", 0)])
 
 
 if __name__ == "__main__":
