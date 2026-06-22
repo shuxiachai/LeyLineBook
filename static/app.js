@@ -8,6 +8,7 @@ const state = {
   editingTaskIsNew: false,
   editingTaskNotes: new Set(),
   editingTransformerTaskId: null,
+  editingCredentialsAccountId: null,
   accountDrag: null,
   selectedActivityType: null,
   selectedStoryType: "archon",
@@ -518,7 +519,7 @@ function renderAccounts() {
     const abyssSection = `<section class="account-task-group"><span class="account-task-group-label">深渊</span><div class="tag-list">${renderTaskTags(abyssTaskTagDefinitions)}</div></section>`;
     const customSection = customTags.length ? `<section class="account-task-group"><span class="account-task-group-label">活动</span><div class="tag-list">${renderCustomTags()}</div></section>` : "";
     const actions = account.active
-      ? `<button class="icon-button" data-edit-account="${account.id}" title="编辑号主">✎</button><button class="icon-button" data-delete-account="${account.id}" title="停用号主">✕</button><span class="drag-handle" data-drag-account="${account.id}" role="button" tabindex="0" aria-label="拖动${escapeHtml(account.name)}调整顺序" title="按住拖动调整顺序">↕</span>`
+      ? `<button class="icon-button" data-credentials-account="${account.id}" title="账号凭据">密</button><button class="icon-button" data-edit-account="${account.id}" title="编辑号主">✎</button><button class="icon-button" data-delete-account="${account.id}" title="停用号主">✕</button><span class="drag-handle" data-drag-account="${account.id}" role="button" tabindex="0" aria-label="拖动${escapeHtml(account.name)}调整顺序" title="按住拖动调整顺序">↕</span>`
       : `<button class="icon-button" data-reactivate-account="${account.id}" title="重新启用">↺</button><button class="icon-button danger" data-purge-account="${account.id}" title="彻底删除号主">␡</button>`;
     const proxyBadge = makeProxyBadge(account.proxy_until);
     return `<article class="account-card account-row${account.active ? "" : " inactive"}" data-account-row="${account.id}"><div class="account-identity"><h3>${escapeHtml(account.name)}</h3>${account.owner ? `<small>${escapeHtml(account.owner)}</small>` : ""}${proxyBadge}</div><div class="account-sections">${dailySection}${customSection}${abyssSection}</div><div class="card-actions">${actions}</div></article>`;
@@ -844,6 +845,52 @@ async function removeConfiguredTask() {
   showToast("任务已移除");
 }
 
+async function openCredentialsDialog(accountId) {
+  const account = state.data.accounts.find((a) => a.id === accountId);
+  state.editingCredentialsAccountId = accountId;
+  document.querySelector("#credentialsAccountId").value = accountId;
+  document.querySelector("#credentialsDialogEyebrow").textContent = account?.name || "账号凭据";
+  document.querySelector("#credentialsUsername").value = "";
+  document.querySelector("#credentialsPassword").value = "";
+  document.querySelector("#credentialsPassword").type = "password";
+  document.querySelector("#togglePassword").textContent = "显示";
+  document.querySelector("#credentialsNote").value = "";
+  const data = await api(`/api/accounts/${accountId}/credentials`);
+  document.querySelector("#credentialsUsername").value = data.username || "";
+  document.querySelector("#credentialsPassword").value = data.password || "";
+  document.querySelector("#credentialsNote").value = data.note || "";
+  const hasData = data.username || data.password || data.note;
+  document.querySelector("#clearCredentials").classList.toggle("hidden", !hasData);
+  document.querySelector("#credentialsDialog").showModal();
+}
+
+async function saveCredentials(event) {
+  event.preventDefault();
+  const id = document.querySelector("#credentialsAccountId").value;
+  await api(`/api/accounts/${id}/credentials`, {
+    method: "PUT",
+    body: JSON.stringify({
+      username: document.querySelector("#credentialsUsername").value,
+      password: document.querySelector("#credentialsPassword").value,
+      note: document.querySelector("#credentialsNote").value,
+    }),
+  });
+  document.querySelector("#credentialsDialog").close();
+  showToast("凭据已保存");
+}
+
+async function clearCredentials() {
+  const confirmed = await confirmAction({
+    title: "清除账号凭据？",
+    message: "清除后，该号主保存的账号和密码将永久删除。",
+    confirmText: "确认清除",
+  });
+  if (!confirmed) return;
+  await api(`/api/accounts/${state.editingCredentialsAccountId}/credentials`, { method: "DELETE", body: "{}" });
+  document.querySelector("#credentialsDialog").close();
+  showToast("凭据已清除");
+}
+
 function openAccountDialog(account = null) {
   document.querySelector("#accountDialogTitle").textContent = account ? "编辑号主" : "新增号主";
   document.querySelector("#accountId").value = account?.id || "";
@@ -852,6 +899,15 @@ function openAccountDialog(account = null) {
   document.querySelector("#accountProxyUntil").value = account?.proxy_until || "";
   document.querySelector("#accountNotes").value = account?.notes || "";
   updateProxyDaysLeft();
+  const isNew = !account;
+  document.querySelector("#accountCredentialsSection").classList.toggle("hidden", !isNew);
+  if (isNew) {
+    document.querySelector("#accountCredUsername").value = "";
+    document.querySelector("#accountCredPassword").value = "";
+    document.querySelector("#accountCredPassword").type = "password";
+    document.querySelector("#accountTogglePassword").textContent = "显示";
+    document.querySelector("#accountCredNote").value = "";
+  }
   document.querySelector("#accountDialog").showModal();
 }
 
@@ -892,7 +948,18 @@ async function saveAccount(event) {
     proxyUntil: document.querySelector("#accountProxyUntil").value,
     notes: document.querySelector("#accountNotes").value,
   };
-  await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+  const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+  if (!id) {
+    const credUsername = document.querySelector("#accountCredUsername").value.trim();
+    const credPassword = document.querySelector("#accountCredPassword").value.trim();
+    const credNote = document.querySelector("#accountCredNote").value.trim();
+    if (credUsername || credPassword || credNote) {
+      await api(`/api/accounts/${result.id}/credentials`, {
+        method: "PUT",
+        body: JSON.stringify({ username: credUsername, password: credPassword, note: credNote }),
+      });
+    }
+  }
   document.querySelector("#accountDialog").close();
   await loadState();
   showToast(id ? "号主信息已更新" : "号主已添加");
@@ -979,6 +1046,12 @@ async function handleAction(target) {
     await api(`/api/tasks/${taskId}/toggle`, { method: "POST", body: JSON.stringify({ date: state.selectedDate, completed }) });
     await loadState();
     showToast(completed ? "已记录完成" : "已撤销记录");
+    return;
+  }
+
+  const credentialsBtn = target.closest("[data-credentials-account]");
+  if (credentialsBtn) {
+    await openCredentialsDialog(Number(credentialsBtn.dataset.credentialsAccount));
     return;
   }
 
@@ -1275,6 +1348,22 @@ function bindEvents() {
   document.querySelector("#activityNameInput").addEventListener("keydown", (event) => {
     if (event.key === "Enter") document.querySelector("#addActivityBtn").click();
   });
+  document.querySelector("#credentialsForm").addEventListener("submit", (event) => saveCredentials(event).catch((error) => showToast(error.message)));
+  document.querySelector("#clearCredentials").addEventListener("click", () => clearCredentials().catch((error) => showToast(error.message)));
+  document.querySelector("#togglePassword").addEventListener("click", () => {
+    const input = document.querySelector("#credentialsPassword");
+    const btn = document.querySelector("#togglePassword");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "隐藏" : "显示";
+  });
+  document.querySelector("#accountTogglePassword").addEventListener("click", () => {
+    const input = document.querySelector("#accountCredPassword");
+    const btn = document.querySelector("#accountTogglePassword");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "隐藏" : "显示";
+  });
   document.querySelector("#accountForm").addEventListener("submit", (event) => saveAccount(event).catch((error) => showToast(error.message)));
   document.querySelector("#taskForm").addEventListener("submit", (event) => saveTask(event).catch((error) => showToast(error.message)));
   document.querySelector("#taskNoteForm").addEventListener("submit", (event) => saveTaskNotes(event).catch((error) => showToast(error.message)));
@@ -1308,12 +1397,23 @@ function bindEvents() {
   });
 }
 
+async function sendHeartbeat() {
+  try { await fetch("/api/heartbeat"); } catch { /* server gone */ }
+}
+
+function startHeartbeat() {
+  sendHeartbeat();
+  window.setInterval(sendHeartbeat, 15000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) sendHeartbeat(); });
+}
+
 async function initialize() {
   applyTheme(localStorage.getItem("task-recorder-theme") || "green", false, false);
   const now = new Date();
   document.querySelector("#historyStart").value = "";
   document.querySelector("#historyEnd").value = localDateString(now);
   bindEvents();
+  startHeartbeat();
   await initializeCharacterBackground();
   await loadState();
   window.setInterval(() => {
