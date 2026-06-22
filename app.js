@@ -37,16 +37,286 @@ const abyssTaskTagDefinitions = [
 ];
 const noteTagDefinitions = ["好感队", "委托"];
 const availableThemes = new Set(["black", "white", "green"]);
+const characterBackgroundDatabase = "leylinebook-preferences";
+const characterBackgroundStore = "visual-assets";
+const characterBackgroundKey = "character-background";
+const characterOpacityKey = "leylinebook-character-opacity-v2";
+const characterThemeActiveKey = "leylinebook-character-theme-active";
+const maximumCharacterImageBytes = 12 * 1024 * 1024;
+const allowedCharacterImageTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
+let characterImageUrl = null;
+let characterBackgroundRecord = null;
 
-function applyTheme(theme, persist = true) {
-  const selectedTheme = availableThemes.has(theme) ? theme : "green";
-  document.body.dataset.theme = selectedTheme;
-  if (persist) localStorage.setItem("task-recorder-theme", selectedTheme);
+function refreshThemeButtons() {
+  const selectedTheme = document.body.dataset.theme;
+  const characterThemeActive = document.body.classList.contains("character-theme");
   document.querySelectorAll("[data-theme-option]").forEach((button) => {
-    const active = button.dataset.themeOption === selectedTheme;
+    const active = !characterThemeActive && button.dataset.themeOption === selectedTheme;
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
+}
+
+function applyTheme(theme, persist = true, exitCharacterTheme = true) {
+  const selectedTheme = availableThemes.has(theme) ? theme : "green";
+  if (exitCharacterTheme) deactivateCharacterTheme(persist);
+  document.body.dataset.theme = selectedTheme;
+  if (persist) localStorage.setItem("task-recorder-theme", selectedTheme);
+  refreshThemeButtons();
+}
+
+function openCharacterBackgroundDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("当前浏览器不支持保存本地背景图片"));
+      return;
+    }
+    const request = window.indexedDB.open(characterBackgroundDatabase, 1);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      if (!database.objectStoreNames.contains(characterBackgroundStore)) {
+        database.createObjectStore(characterBackgroundStore, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("无法打开本地图片存储"));
+  });
+}
+
+async function runCharacterBackgroundRequest(mode, action) {
+  const database = await openCharacterBackgroundDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(characterBackgroundStore, mode);
+    const store = transaction.objectStore(characterBackgroundStore);
+    const request = action(store);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("本地图片操作失败"));
+    transaction.oncomplete = () => database.close();
+    transaction.onerror = () => database.close();
+    transaction.onabort = () => database.close();
+  });
+}
+
+function readCharacterBackground() {
+  return runCharacterBackgroundRequest("readonly", (store) => store.get(characterBackgroundKey));
+}
+
+function saveCharacterBackground(file) {
+  return runCharacterBackgroundRequest("readwrite", (store) => store.put({
+    id: characterBackgroundKey,
+    blob: file,
+    name: file.name,
+    type: file.type,
+    size: file.size,
+    savedAt: new Date().toISOString(),
+  }));
+}
+
+function deleteCharacterBackground() {
+  return runCharacterBackgroundRequest("readwrite", (store) => store.delete(characterBackgroundKey));
+}
+
+function applyCharacterOpacity(value, persist = true) {
+  const parsed = Number.parseInt(value, 10);
+  const opacity = Number.isFinite(parsed) ? Math.min(100, Math.max(20, parsed)) : 72;
+  document.documentElement.style.setProperty("--character-opacity", String(opacity / 100));
+  document.querySelector("#characterOpacity").value = String(opacity);
+  document.querySelector("#characterOpacityValue").value = `${opacity}%`;
+  if (persist) localStorage.setItem(characterOpacityKey, String(opacity));
+}
+
+function updateCharacterThemeControls() {
+  const hasImage = Boolean(characterBackgroundRecord?.blob instanceof Blob && characterBackgroundRecord.blob.size);
+  const active = hasImage && document.body.classList.contains("character-theme");
+  const enableButton = document.querySelector("#enableCharacterTheme");
+  enableButton.disabled = !hasImage || active;
+  enableButton.textContent = active ? "角色主题已启用" : "启用角色主题";
+  document.querySelector("#removeCharacterImage").disabled = !hasImage;
+  refreshThemeButtons();
+}
+
+function deactivateCharacterTheme(persist = true) {
+  document.body.classList.remove("character-theme");
+  document.querySelector("#characterBackdrop")?.classList.remove("active-theme");
+  if (persist) localStorage.setItem(characterThemeActiveKey, "false");
+  if (document.querySelector("#enableCharacterTheme")) updateCharacterThemeControls();
+}
+
+function clampColor(value) {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+async function extractCharacterPalette(blob) {
+  const source = await createImageBitmap(blob);
+  const canvas = document.createElement("canvas");
+  canvas.width = 72;
+  canvas.height = 72;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  source.close?.();
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  let luminanceTotal = 0;
+  let luminanceWeight = 0;
+  let redTotal = 0;
+  let greenTotal = 0;
+  let blueTotal = 0;
+  let colorWeight = 0;
+
+  for (let index = 0; index < pixels.length; index += 4) {
+    const alpha = pixels[index + 3] / 255;
+    if (alpha < 0.12) continue;
+    const red = pixels[index];
+    const green = pixels[index + 1];
+    const blue = pixels[index + 2];
+    const highest = Math.max(red, green, blue);
+    const lowest = Math.min(red, green, blue);
+    const saturation = highest ? (highest - lowest) / highest : 0;
+    const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+    luminanceTotal += luminance * alpha;
+    luminanceWeight += alpha;
+    if (luminance < 0.08 || luminance > 0.94) continue;
+    const weight = alpha * (0.35 + saturation * 1.8);
+    redTotal += red * weight;
+    greenTotal += green * weight;
+    blueTotal += blue * weight;
+    colorWeight += weight;
+  }
+
+  if (!luminanceWeight || !colorWeight) {
+    return { red: 70, green: 126, blue: 104, tone: "dark" };
+  }
+  let red = redTotal / colorWeight;
+  let green = greenTotal / colorWeight;
+  let blue = blueTotal / colorWeight;
+  const midpoint = (red + green + blue) / 3;
+  red = clampColor(midpoint + (red - midpoint) * 1.45);
+  green = clampColor(midpoint + (green - midpoint) * 1.45);
+  blue = clampColor(midpoint + (blue - midpoint) * 1.45);
+  const brightest = Math.max(red, green, blue);
+  if (brightest < 105) {
+    const scale = 105 / Math.max(brightest, 1);
+    red = clampColor(red * scale);
+    green = clampColor(green * scale);
+    blue = clampColor(blue * scale);
+  }
+  return {
+    red,
+    green,
+    blue,
+    tone: luminanceTotal / luminanceWeight > 0.57 ? "light" : "dark",
+  };
+}
+
+async function activateCharacterTheme(persist = true) {
+  const blob = characterBackgroundRecord?.blob;
+  if (!(blob instanceof Blob) || !blob.size) throw new Error("请先选择角色图片");
+  let palette;
+  try {
+    palette = await extractCharacterPalette(blob);
+  } catch {
+    palette = { red: 70, green: 126, blue: 104, tone: "dark" };
+  }
+  const accentLuminance = (0.2126 * palette.red + 0.7152 * palette.green + 0.0722 * palette.blue) / 255;
+  document.body.style.setProperty("--character-accent-rgb", `${palette.red}, ${palette.green}, ${palette.blue}`);
+  document.body.style.setProperty("--character-button-text", accentLuminance > 0.58 ? "#18201c" : "#ffffff");
+  document.body.dataset.characterTone = palette.tone;
+  document.body.classList.add("character-theme");
+  document.querySelector("#characterBackdrop").classList.add("active-theme");
+  if (persist) localStorage.setItem(characterThemeActiveKey, "true");
+  updateCharacterThemeControls();
+}
+
+function renderCharacterBackground(record) {
+  if (characterImageUrl) {
+    URL.revokeObjectURL(characterImageUrl);
+    characterImageUrl = null;
+  }
+  const blob = record?.blob;
+  const hasImage = blob instanceof Blob && blob.size > 0;
+  const backdrop = document.querySelector("#characterBackdrop");
+  const preview = document.querySelector("#characterPreview");
+  const backdropImage = document.querySelector("#characterBackdropImage");
+  const previewImage = document.querySelector("#characterPreviewImage");
+  const removeButton = document.querySelector("#removeCharacterImage");
+  const storageNote = document.querySelector("#characterStorageNote");
+
+  characterBackgroundRecord = hasImage ? record : null;
+  backdrop.classList.toggle("has-image", hasImage);
+  preview.classList.toggle("has-image", hasImage);
+  removeButton.disabled = !hasImage;
+  if (!hasImage) {
+    backdropImage.removeAttribute("src");
+    previewImage.removeAttribute("src");
+    storageNote.textContent = "支持 PNG、JPEG、WebP，最大 12 MB。";
+    deactivateCharacterTheme(false);
+    updateCharacterThemeControls();
+    return;
+  }
+
+  characterImageUrl = URL.createObjectURL(blob);
+  backdropImage.src = characterImageUrl;
+  previewImage.src = characterImageUrl;
+  const sizeMb = (blob.size / 1024 / 1024).toFixed(1);
+  storageNote.textContent = `已保存在当前浏览器：${record.name || "角色背景"}（${sizeMb} MB）`;
+  updateCharacterThemeControls();
+}
+
+function validateCharacterImage(file) {
+  if (!allowedCharacterImageTypes.has(file.type)) {
+    throw new Error("请选择 PNG、JPEG 或 WebP 图片");
+  }
+  if (file.size > maximumCharacterImageBytes) {
+    throw new Error("图片不能超过 12 MB");
+  }
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(file);
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve();
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("图片无法读取，请换一张图片重试"));
+    };
+    image.src = url;
+  });
+}
+
+async function chooseCharacterBackground(event) {
+  const input = event.currentTarget;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    await validateCharacterImage(file);
+    await saveCharacterBackground(file);
+    renderCharacterBackground({ blob: file, name: file.name });
+    await activateCharacterTheme();
+    showToast("角色主题已启用");
+  } finally {
+    input.value = "";
+  }
+}
+
+async function removeCharacterBackground() {
+  await deleteCharacterBackground();
+  deactivateCharacterTheme();
+  renderCharacterBackground(null);
+  showToast("角色背景已移除");
+}
+
+async function initializeCharacterBackground() {
+  applyCharacterOpacity(localStorage.getItem(characterOpacityKey) || "72", false);
+  try {
+    const record = await readCharacterBackground();
+    renderCharacterBackground(record);
+    const storedActive = localStorage.getItem(characterThemeActiveKey);
+    if (record?.blob && storedActive !== "false") await activateCharacterTheme(false);
+  } catch (error) {
+    renderCharacterBackground(null);
+    showToast(error.message);
+  }
 }
 
 function localDateString(value) {
@@ -1025,6 +1295,11 @@ function bindEvents() {
   document.querySelector("#exportBackup").addEventListener("click", () => exportBackup().catch((error) => showToast(error.message)));
   document.querySelector("#saveVersionDate").addEventListener("click", () => saveVersionDate().catch((error) => showToast(error.message)));
   document.querySelector("#shutdownApp").addEventListener("click", () => shutdownApp().catch((error) => showToast(error.message)));
+  document.querySelector("#chooseCharacterImage").addEventListener("click", () => document.querySelector("#characterImageInput").click());
+  document.querySelector("#characterImageInput").addEventListener("change", (event) => chooseCharacterBackground(event).catch((error) => showToast(error.message)));
+  document.querySelector("#enableCharacterTheme").addEventListener("click", () => activateCharacterTheme().then(() => showToast("角色主题已启用")).catch((error) => showToast(error.message)));
+  document.querySelector("#removeCharacterImage").addEventListener("click", () => removeCharacterBackground().catch((error) => showToast(error.message)));
+  document.querySelector("#characterOpacity").addEventListener("input", (event) => applyCharacterOpacity(event.target.value));
   document.querySelectorAll("[data-theme-option]").forEach((button) => {
     button.addEventListener("click", () => {
       applyTheme(button.dataset.themeOption);
@@ -1034,11 +1309,12 @@ function bindEvents() {
 }
 
 async function initialize() {
-  applyTheme(localStorage.getItem("task-recorder-theme") || "green", false);
+  applyTheme(localStorage.getItem("task-recorder-theme") || "green", false, false);
   const now = new Date();
   document.querySelector("#historyStart").value = "";
   document.querySelector("#historyEnd").value = localDateString(now);
   bindEvents();
+  await initializeCharacterBackground();
   await loadState();
   window.setInterval(() => {
     if (state.currentView === "today" && state.selectedDate === localDateString(new Date()) && !document.querySelector("dialog[open]")) {
