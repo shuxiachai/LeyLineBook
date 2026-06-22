@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import sys
@@ -24,8 +25,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RUNTIME_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 STATIC_DIR = RUNTIME_DIR / "static"
-DB_PATH = APP_DIR / "task_records.db"
-LOG_PATH = APP_DIR / "task_recorder.log"
+
+_appdata = os.environ.get("APPDATA") if getattr(sys, "frozen", False) else None
+DATA_DIR = (Path(_appdata) / "LeyLineBook") if _appdata else APP_DIR
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / "task_records.db"
+LOG_PATH = DATA_DIR / "task_recorder.log"
+
+_legacy_db = APP_DIR / "task_records.db"
+if APP_DIR != DATA_DIR and _legacy_db.exists() and not DB_PATH.exists():
+    shutil.copy2(_legacy_db, DB_PATH)
 
 TASK_TAG_PRESETS = {
     "体力": {"recurrence": "daily"},
@@ -999,6 +1008,79 @@ def reactivate_account(account_id: int) -> None:
             raise LookupError("没有找到该号主")
 
 
+def reset_database() -> None:
+    with db_connection() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript("""
+            DELETE FROM task_records;
+            DELETE FROM tasks;
+            DELETE FROM account_group_notes;
+            DELETE FROM story_tasks;
+            DELETE FROM custom_task_tags;
+            DELETE FROM accounts;
+            DELETE FROM app_meta;
+        """)
+        connection.execute("PRAGMA foreign_keys = ON")
+    initialize_database()
+
+
+def import_backup(payload: dict) -> None:
+    if not isinstance(payload.get("accounts"), list):
+        raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    with db_connection() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript("""
+            DELETE FROM task_records;
+            DELETE FROM tasks;
+            DELETE FROM account_group_notes;
+            DELETE FROM story_tasks;
+            DELETE FROM custom_task_tags;
+            DELETE FROM accounts;
+        """)
+        for row in payload.get("customTags", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO custom_task_tags(id,name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?,?)",
+                (row.get("id"), row.get("name"), row.get("category", "大活动"),
+                 row.get("duration_days", 16), row.get("start_date"), row.get("created_at", now_text())),
+            )
+        for row in payload.get("accounts", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO accounts(id,name,owner,notes,proxy_until,active,deleted,sort_order,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (row.get("id"), row.get("name", ""), row.get("owner", ""), row.get("notes", ""),
+                 row.get("proxy_until"), row.get("active", 1), row.get("deleted", 0),
+                 row.get("sort_order", 0), row.get("created_at", now_text())),
+            )
+        for row in payload.get("tasks", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO tasks(id,account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row.get("id"), row.get("account_id"), row.get("name", ""),
+                 row.get("recurrence", "daily"), row.get("interval_days"), row.get("monthly_day"),
+                 row.get("next_due"), row.get("notes", ""), row.get("active", 1),
+                 row.get("sort_order", 0), row.get("custom_tag_id"), row.get("created_at", now_text())),
+            )
+        for row in payload.get("records", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO task_records(id,task_id,task_date,completed_at,previous_next_due,note) VALUES(?,?,?,?,?,?)",
+                (row.get("id"), row.get("task_id"), row.get("task_date", ""),
+                 row.get("completed_at", now_text()), row.get("previous_next_due"), row.get("note", "")),
+            )
+        for row in payload.get("storyTasks", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO story_tasks(id,account_id,owner_name,name,task_type,has_bonus,bonus_deadline,completed_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (row.get("id"), row.get("account_id"), row.get("owner_name", ""),
+                 row.get("name", ""), row.get("task_type", "world"), row.get("has_bonus", 0),
+                 row.get("bonus_deadline"), row.get("completed_at"), row.get("active", 1),
+                 row.get("created_at", now_text())),
+            )
+        for row in payload.get("groupNotes", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO account_group_notes(id,account_id,category,note,created_at) VALUES(?,?,?,?,?)",
+                (row.get("id"), row.get("account_id"), row.get("category", "daily"),
+                 row.get("note", ""), row.get("created_at", now_text())),
+            )
+        connection.execute("PRAGMA foreign_keys = ON")
+
+
 def list_custom_tags() -> list[dict]:
     with db_connection() as connection:
         return [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags ORDER BY id")]
@@ -1639,8 +1721,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
                     "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
                     "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
+                    "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
+                    "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
                 }
             self.send_json(data)
+            return
+        if method == "POST" and path == "/api/import":
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 50_000_000:
+                raise ValueError("文件过大（最大 50 MB）")
+            raw = self.rfile.read(length)
+            import_backup(json.loads(raw.decode("utf-8")) if raw else {})
+            self.send_json(None)
             return
         payload = self.read_json()
         if method == "PUT" and path == "/api/settings/version":
@@ -1761,6 +1853,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/accounts/(\d+)/custom-tags", path)
         if match and method == "POST":
             set_account_custom_tag(int(match.group(1)), payload)
+            self.send_json(None)
+            return
+        if method == "POST" and path == "/api/reset":
+            reset_database()
             self.send_json(None)
             return
         if method == "POST" and path == "/api/shutdown":

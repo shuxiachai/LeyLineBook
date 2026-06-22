@@ -124,6 +124,47 @@ class TaskRecorderTest(unittest.TestCase):
         )
         self.assertNotIn("credentials", state_account)
 
+    def test_backup_import_replaces_data_and_reset_clears_it(self):
+        existing = create_test_account({"name": "导入前号主"})
+        payload = {
+            "accounts": [
+                {
+                    "id": 501,
+                    "name": "导入后号主",
+                    "owner": "测试",
+                    "notes": "",
+                    "proxy_until": "2026-08-20",
+                    "active": 1,
+                    "deleted": 0,
+                    "sort_order": 1,
+                    "created_at": "2026-06-22T00:00:00",
+                    "credentials": "must-not-import",
+                }
+            ],
+            "tasks": [],
+            "records": [],
+            "storyTasks": [],
+            "customTags": [],
+            "groupNotes": [],
+        }
+
+        app.import_backup(payload)
+        with app.db_connection() as connection:
+            accounts = connection.execute(
+                "SELECT id, name, credentials FROM accounts ORDER BY id"
+            ).fetchall()
+        self.assertEqual([(row["id"], row["name"]) for row in accounts], [(501, "导入后号主")])
+        self.assertIsNone(accounts[0]["credentials"])
+        self.assertNotEqual(existing["id"], accounts[0]["id"])
+
+        app.reset_database()
+        with app.db_connection() as connection:
+            counts = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("accounts", "tasks", "task_records", "story_tasks", "custom_task_tags")
+            )
+        self.assertEqual(counts, (0, 0, 0, 0, 0))
+
     def test_existing_database_schema_adds_weekly_without_losing_data(self):
         app.DB_PATH = Path(self.temp_dir.name) / "legacy.db"
         with sqlite3.connect(app.DB_PATH) as connection:

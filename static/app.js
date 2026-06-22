@@ -37,7 +37,7 @@ const abyssTaskTagDefinitions = [
   { name: "危战", label: "危战" },
 ];
 const noteTagDefinitions = ["好感队", "委托"];
-const availableThemes = new Set(["black", "white", "green"]);
+const availableThemes = new Set(["black", "white", "green", "blue", "purple", "rose", "amber"]);
 const characterBackgroundDatabase = "leylinebook-preferences";
 const characterBackgroundStore = "visual-assets";
 const characterBackgroundKey = "character-background";
@@ -147,6 +147,37 @@ function clampColor(value) {
   return Math.max(0, Math.min(255, Math.round(value)));
 }
 
+function rgbToHsl(r, g, b) {
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  switch (max) {
+    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+    case g: h = (b - r) / d + 2; break;
+    default: h = (r - g) / d + 4;
+  }
+  return [h / 6, s, l];
+}
+
+function hslChannel(p, q, t) {
+  if (t < 0) t += 1;
+  if (t > 1) t -= 1;
+  if (t < 1 / 6) return Math.round((p + (q - p) * 6 * t) * 255);
+  if (t < 1 / 2) return Math.round(q * 255);
+  if (t < 2 / 3) return Math.round((p + (q - p) * (2 / 3 - t) * 6) * 255);
+  return Math.round(p * 255);
+}
+
+function hslToRgb(h, s, l) {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [hslChannel(p, q, h + 1 / 3), hslChannel(p, q, h), hslChannel(p, q, h - 1 / 3)];
+}
+
 async function extractCharacterPalette(blob) {
   const source = await createImageBitmap(blob);
   const canvas = document.createElement("canvas");
@@ -176,37 +207,25 @@ async function extractCharacterPalette(blob) {
     const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
     luminanceTotal += luminance * alpha;
     luminanceWeight += alpha;
-    if (luminance < 0.08 || luminance > 0.94) continue;
-    const weight = alpha * (0.35 + saturation * 1.8);
+    if (luminance < 0.05 || luminance > 0.96) continue;
+    if (saturation < 0.1) continue;
+    const weight = alpha * saturation * saturation * 3.5;
     redTotal += red * weight;
     greenTotal += green * weight;
     blueTotal += blue * weight;
     colorWeight += weight;
   }
 
-  if (!luminanceWeight || !colorWeight) {
-    return { red: 70, green: 126, blue: 104, tone: "dark" };
-  }
-  let red = redTotal / colorWeight;
-  let green = greenTotal / colorWeight;
-  let blue = blueTotal / colorWeight;
-  const midpoint = (red + green + blue) / 3;
-  red = clampColor(midpoint + (red - midpoint) * 1.45);
-  green = clampColor(midpoint + (green - midpoint) * 1.45);
-  blue = clampColor(midpoint + (blue - midpoint) * 1.45);
-  const brightest = Math.max(red, green, blue);
-  if (brightest < 105) {
-    const scale = 105 / Math.max(brightest, 1);
-    red = clampColor(red * scale);
-    green = clampColor(green * scale);
-    blue = clampColor(blue * scale);
-  }
-  return {
-    red,
-    green,
-    blue,
-    tone: luminanceTotal / luminanceWeight > 0.57 ? "light" : "dark",
-  };
+  const tone = luminanceWeight && luminanceTotal / luminanceWeight > 0.57 ? "light" : "dark";
+  if (!colorWeight) return { red: 70, green: 126, blue: 104, tone };
+
+  const [hue, sat, light] = rgbToHsl(redTotal / colorWeight / 255, greenTotal / colorWeight / 255, blueTotal / colorWeight / 255);
+  const boostedSat = Math.min(0.88, Math.max(0.60, sat * 1.5 + 0.15));
+  const targetLight = 0.42;
+  const pull = light < 0.22 ? 0.65 : light > 0.75 ? 0.55 : 0.15;
+  const adjustedLight = light + (targetLight - light) * pull;
+  const [red, green, blue] = hslToRgb(hue, boostedSat, adjustedLight);
+  return { red, green, blue, tone };
 }
 
 async function activateCharacterTheme(persist = true) {
@@ -1207,6 +1226,50 @@ async function saveVersionDate() {
   showToast("版本周期锚点已校准");
 }
 
+async function importBackup(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  const text = await file.text();
+  event.target.value = "";
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    showToast("文件格式无效，请选择由本程序导出的 JSON 备份文件");
+    return;
+  }
+  const confirmed = await confirmAction({
+    title: "导入备份？",
+    message: "当前所有数据将被替换，操作不可撤销。建议先导出当前数据作为备份。账号密码因加密绑定本机，导入后需重新填写。",
+    confirmText: "确认导入",
+  });
+  if (!confirmed) return;
+  const response = await fetch("/api/import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: text,
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    showToast(result.error || "导入失败");
+    return;
+  }
+  await loadState();
+  showToast("备份已导入");
+}
+
+async function resetDatabase() {
+  const confirmed = await confirmAction({
+    title: "清空所有数据？",
+    message: "将删除全部号主、任务和历史记录，恢复初始状态。操作不可撤销，建议先导出备份。",
+    confirmText: "确认清空",
+  });
+  if (!confirmed) return;
+  await api("/api/reset", { method: "POST", body: "{}" });
+  await loadState();
+  showToast("数据库已清空");
+}
+
 async function shutdownApp() {
   const confirmed = await confirmAction({
     title: "关闭地脉簿？",
@@ -1382,6 +1445,9 @@ function bindEvents() {
     button.addEventListener("click", () => loadRecentHistory(Number(button.dataset.historyMonths)).catch((error) => showToast(error.message)));
   });
   document.querySelector("#exportBackup").addEventListener("click", () => exportBackup().catch((error) => showToast(error.message)));
+  document.querySelector("#importBackupBtn").addEventListener("click", () => document.querySelector("#importFileInput").click());
+  document.querySelector("#importFileInput").addEventListener("change", (event) => importBackup(event).catch((error) => showToast(error.message)));
+  document.querySelector("#resetDatabaseBtn").addEventListener("click", () => resetDatabase().catch((error) => showToast(error.message)));
   document.querySelector("#saveVersionDate").addEventListener("click", () => saveVersionDate().catch((error) => showToast(error.message)));
   document.querySelector("#shutdownApp").addEventListener("click", () => shutdownApp().catch((error) => showToast(error.message)));
   document.querySelector("#chooseCharacterImage").addEventListener("click", () => document.querySelector("#characterImageInput").click());
