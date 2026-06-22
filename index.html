@@ -207,7 +207,7 @@
         </div>
         <div class="settings-card warning">
           <span class="settings-icon">安</span>
-          <div><h2>账号安全</h2><p>本工具只用于记录任务，不要在备注中保存密码、验证码或登录凭据。</p></div>
+          <div><h2>账号安全</h2><p>账号密码请通过号主列表中的「密」按钮安全存储，使用 Windows DPAPI 加密，备份导出时不含密码。请勿在备注字段中直接填写密码或验证码。</p></div>
         </div>
         <div class="settings-card danger-card">
           <span class="settings-icon">关</span>
@@ -238,7 +238,18 @@
           </div>
         </div>
       </label>
-      <label>备注<textarea id="accountNotes" maxlength="500" rows="3" placeholder="可选，不要填写密码"></textarea></label>
+      <label>备注<textarea id="accountNotes" maxlength="500" rows="3" placeholder="可选"></textarea></label>
+      <div id="accountCredentialsSection">
+        <div class="cred-section-divider">账号凭据（可选）</div>
+        <label>账号名称<input id="accountCredUsername" maxlength="200" placeholder="游戏账号名称" autocomplete="username"></label>
+        <label>密码
+          <div class="password-field">
+            <input type="password" id="accountCredPassword" maxlength="500" placeholder="游戏账号密码" autocomplete="new-password">
+            <button type="button" class="password-toggle" id="accountTogglePassword">显示</button>
+          </div>
+        </label>
+        <label>凭据备注<input id="accountCredNote" maxlength="200" placeholder="如：UID、服务器（可选）"></label>
+      </div>
       <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="accountDialog">取消</button><button type="submit" class="button primary" id="saveAccount">保存</button></div>
     </form>
   </dialog>
@@ -325,6 +336,31 @@
       <div class="dialog-actions">
         <button type="button" class="button ghost" data-close-dialog="transformerUsageDialog">取消</button>
         <button type="submit" class="button primary">确认完成</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="credentialsDialog">
+    <form method="dialog" id="credentialsForm">
+      <div class="dialog-head">
+        <div><p class="eyebrow" id="credentialsDialogEyebrow">账号凭据</p><h2>查看 / 编辑密码</h2></div>
+        <button type="button" class="icon-button" data-close-dialog="credentialsDialog" aria-label="关闭">×</button>
+      </div>
+      <input type="hidden" id="credentialsAccountId">
+      <label>账号名称<input id="credentialsUsername" maxlength="200" placeholder="游戏账号名称（可选）" autocomplete="username"></label>
+      <label>密码
+        <div class="password-field">
+          <input type="password" id="credentialsPassword" maxlength="500" placeholder="游戏账号密码（可选）" autocomplete="new-password">
+          <button type="button" class="password-toggle" id="togglePassword">显示</button>
+        </div>
+      </label>
+      <label>备注<input id="credentialsNote" maxlength="200" placeholder="如：UID、服务器、绑定邮箱（可选）"></label>
+      <p class="form-hint">密码使用 Windows DPAPI 加密存储，仅限当前 Windows 用户账户读取。备份导出时不包含密码数据。</p>
+      <div class="dialog-actions split-actions">
+        <button type="button" class="button danger" id="clearCredentials">清除凭据</button>
+        <span></span>
+        <button type="button" class="button ghost" data-close-dialog="credentialsDialog">取消</button>
+        <button type="submit" class="button primary">保存</button>
       </div>
     </form>
   </dialog>
