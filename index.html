@@ -16,18 +16,18 @@
         <div class="brand-mark">簿</div>
         <div>
           <strong>地脉簿</strong>
-          <span>LeyLineBook · 本地离线版</span>
+          <span>LeyLineBook</span>
         </div>
       </div>
       <nav aria-label="主菜单">
         <button class="nav-item active" data-view="today"><span>今日任务</span><b id="navRemaining">0</b></button>
-        <button class="nav-item" data-view="accounts"><span>号主与任务</span></button>
-        <button class="nav-item" data-view="activities"><span>活动任务</span></button>
         <button class="nav-item" data-view="story"><span>剧情任务</span><b id="storyRemaining">0</b></button>
+        <button class="nav-item" data-view="accounts"><span>号主与任务</span></button>
+        <button class="nav-item" data-view="activities"><span>限时活动</span></button>
         <button class="nav-item" data-view="history"><span>历史记录</span></button>
         <button class="nav-item" data-view="settings"><span>设置与备份</span></button>
       </nav>
-      <div class="local-note">数据仅保存在这台电脑</div>
+      <div class="local-note">所有数据仅保存在本地，不会上传或同步</div>
     </aside>
 
     <main>
@@ -77,6 +77,26 @@
         <div id="manualTaskGroups" class="task-groups compact"></div>
       </section>
 
+      <section class="view" id="view-story">
+        <div class="section-toolbar">
+          <div><h2>剧情任务</h2><p>记录魔神任务、传说任务和世界任务；奖励到期后任务仍会保留</p></div>
+        </div>
+        <div class="story-creator">
+          <input id="storyOwner" list="storyOwnerOptions" maxlength="100" placeholder="选择或输入号主" aria-label="剧情任务所属号主">
+          <datalist id="storyOwnerOptions"></datalist>
+          <input id="storyName" maxlength="100" placeholder="任务名称（选填，默认使用任务类型）">
+          <div class="story-type-row" role="group" aria-label="剧情任务类型">
+            <button type="button" class="story-type-btn selected" data-story-type="archon">魔神任务</button>
+            <button type="button" class="story-type-btn" data-story-type="legend">传说任务</button>
+            <button type="button" class="story-type-btn" data-story-type="world">世界任务</button>
+          </div>
+          <label class="story-bonus-option"><input type="checkbox" id="storyHasBonus" checked> 有额外奖励期限</label>
+          <div class="story-deadline-preview" id="storyDeadlinePreview"></div>
+          <button type="button" class="button primary" id="addStoryTask">添加剧情任务</button>
+        </div>
+        <div id="storyTaskList" class="story-task-list"></div>
+      </section>
+
       <section class="view" id="view-accounts">
         <div class="section-toolbar">
           <div><h2>号主与委托</h2><p>维护号主，并为每个号主配置需要记录的任务</p></div>
@@ -87,7 +107,7 @@
 
       <section class="view" id="view-activities">
         <div class="section-toolbar">
-          <div><h2>活动任务</h2><p>创建活动后，可在「号主与任务」为每个号主开启</p></div>
+          <div><h2>限时活动</h2><p>记录大版本内的限时大活动与小活动，按类型自动计算截止时间</p></div>
         </div>
         <div class="activity-creator">
           <input id="activityNameInput" maxlength="100" placeholder="活动名称（选填，默认使用活动类型）">
@@ -107,26 +127,6 @@
           <button class="button primary" id="addActivityBtn" disabled>添加活动</button>
         </div>
         <div id="activityList" class="activity-list"></div>
-      </section>
-
-      <section class="view" id="view-story">
-        <div class="section-toolbar">
-          <div><h2>剧情任务</h2><p>记录魔神任务、传说任务和世界任务；奖励到期后任务仍会保留</p></div>
-        </div>
-        <div class="story-creator">
-          <input id="storyOwner" list="storyOwnerOptions" maxlength="100" placeholder="选择或输入号主" aria-label="剧情任务所属号主">
-          <datalist id="storyOwnerOptions"></datalist>
-          <input id="storyName" maxlength="100" placeholder="任务名称（选填，默认使用任务类型）">
-          <div class="story-type-row" role="group" aria-label="剧情任务类型">
-            <button type="button" class="story-type-btn selected" data-story-type="archon">魔神任务</button>
-            <button type="button" class="story-type-btn" data-story-type="legend">传说任务</button>
-            <button type="button" class="story-type-btn" data-story-type="world">世界任务</button>
-          </div>
-          <label class="story-bonus-option"><input type="checkbox" id="storyHasBonus" checked> 有额外奖励期限</label>
-          <div class="story-deadline-preview" id="storyDeadlinePreview"></div>
-          <button type="button" class="button primary" id="addStoryTask">添加剧情任务</button>
-        </div>
-        <div id="storyTaskList" class="story-task-list"></div>
       </section>
 
       <section class="view" id="view-history">
@@ -188,6 +188,14 @@
                   <span>背景强度 <output id="characterOpacityValue">72%</output></span>
                   <input type="range" id="characterOpacity" min="20" max="100" value="72">
                 </label>
+                <label class="opacity-control" for="characterZoom">
+                  <span>图片比例 <output id="characterZoomValue">100%</output></span>
+                  <input type="range" id="characterZoom" min="30" max="200" value="100">
+                </label>
+                <label class="opacity-control" for="characterPosition">
+                  <span>图片位置 <output id="characterPositionValue">居中</output></span>
+                  <input type="range" id="characterPosition" min="0" max="100" value="50">
+                </label>
                 <small class="character-storage-note" id="characterStorageNote">支持 PNG、JPEG、WebP，最大 12 MB。</small>
               </div>
             </div>
@@ -237,7 +245,7 @@
     <form method="dialog" id="accountForm">
       <div class="dialog-head"><div><p class="eyebrow">账号资料</p><h2 id="accountDialogTitle">新增号主</h2></div><button type="button" class="icon-button" data-close-dialog="accountDialog" aria-label="关闭">×</button></div>
       <input type="hidden" id="accountId">
-      <label>号主名称<input id="accountName" maxlength="100" required placeholder="例如：雪惊霄"></label>
+      <label>号主名称<input id="accountName" maxlength="100" required placeholder="例如：树下"></label>
       <label>联系人/分组<input id="accountOwner" maxlength="100" placeholder="可选"></label>
       <label>截止日期
         <div class="proxy-date-picker">
