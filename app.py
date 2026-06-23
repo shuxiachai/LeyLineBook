@@ -67,8 +67,12 @@ def now_text() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def game_today() -> date:
+    return (datetime.now() - timedelta(hours=4)).date()
+
+
 def today_text() -> str:
-    return date.today().isoformat()
+    return game_today().isoformat()
 
 
 class _DataBlob(ctypes.Structure):
@@ -304,7 +308,7 @@ def version_window(version_anchor: str | None, reference: date | None = None) ->
     if not version_anchor:
         return None
     anchor_date = date.fromisoformat(version_anchor)
-    reference_date = reference or date.today()
+    reference_date = reference or game_today()
     cycle_offset = (reference_date - anchor_date).days // VERSION_LENGTH_DAYS
     start_date = anchor_date + timedelta(days=cycle_offset * VERSION_LENGTH_DAYS)
     event_start = start_date + timedelta(days=7)
@@ -339,7 +343,7 @@ def get_version_anchor(connection: sqlite3.Connection) -> str:
 
 
 def configure_fixed_tasks(connection: sqlite3.Connection) -> None:
-    reference = date.today()
+    reference = game_today()
     theater_due = monthly_occurrence(reference, 1).isoformat()
     abyss_due = monthly_occurrence(reference, 16).isoformat()
     version_anchor = get_version_anchor(connection)
@@ -758,7 +762,7 @@ def load_state(selected_date: str) -> dict:
     selected_day = date.fromisoformat(selected_date)
     selected_cutoff = (
         datetime.now()
-        if selected_day == date.today()
+        if selected_day == game_today()
         else datetime.combine(selected_day, datetime.max.time())
     )
     selected_week_key = weekly_cycle_key(selected_day)
@@ -817,7 +821,7 @@ def load_state(selected_date: str) -> dict:
                 )
             if task["completed"] or is_due:
                 due_tasks.append(task)
-            elif precise_due and selected_day == date.today():
+            elif precise_due and selected_day == game_today():
                 cooling_tasks.append(task)
         elif recurrence == "monthly" and (
             task["completed"] or (task["next_due"] and task["next_due"] <= selected_date)
@@ -1201,7 +1205,7 @@ def create_custom_tag(payload: dict) -> dict:
         raise ValueError("活动时长无效，应为 1 到 365 天")
     raw_start = str(payload.get("startDate", "")).strip()
     try:
-        start_date = date.fromisoformat(raw_start).isoformat() if raw_start else date.today().isoformat()
+        start_date = date.fromisoformat(raw_start).isoformat() if raw_start else game_today().isoformat()
     except ValueError:
         raise ValueError("开始日期格式无效")
     with db_connection() as connection:
@@ -1255,7 +1259,7 @@ def set_account_custom_tag(account_id: int, payload: dict) -> None:
             return
         if active_task:
             return
-        tag_start = date.fromisoformat(tag["start_date"]) if tag["start_date"] else date.today()
+        tag_start = date.fromisoformat(tag["start_date"]) if tag["start_date"] else game_today()
         next_due = tag_start.isoformat()
         connection.execute(
             """
@@ -1311,7 +1315,7 @@ def create_task(payload: dict) -> dict:
         monthly_day = int(payload.get("monthlyDay", 0))
         if monthly_day < 1 or monthly_day > 28:
             raise ValueError("每月刷新日期需要在 1 到 28 日之间")
-        next_due = monthly_occurrence(date.today(), monthly_day).isoformat()
+        next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
     if recurrence == "version":
         settings = get_schedule_settings()
         next_due = settings["warWindow"]["eventStart"] if settings["warWindow"] else None
@@ -1352,7 +1356,7 @@ def update_task(task_id: int, payload: dict) -> None:
         monthly_day = int(payload.get("monthlyDay", 0))
         if monthly_day < 1 or monthly_day > 28:
             raise ValueError("每月刷新日期需要在 1 到 28 日之间")
-        next_due = monthly_occurrence(date.today(), monthly_day).isoformat()
+        next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
     if recurrence == "version":
         settings = get_schedule_settings()
         next_due = settings["warWindow"]["eventStart"] if settings["warWindow"] else None
@@ -1419,9 +1423,9 @@ def set_account_task_tag(account_id: int, payload: dict) -> None:
         monthly_day = preset.get("monthly_day")
         next_due = None
         if recurrence == "interval":
-            next_due = date.today().isoformat()
+            next_due = game_today().isoformat()
         elif recurrence == "monthly":
-            next_due = monthly_occurrence(date.today(), monthly_day).isoformat()
+            next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
         elif recurrence == "version":
             version_anchor = get_version_anchor(connection)
             window = version_window(version_anchor)

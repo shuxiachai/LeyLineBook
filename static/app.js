@@ -1,5 +1,5 @@
 const state = {
-  selectedDate: localDateString(new Date()),
+  selectedDate: localDateString(gameDate()),
   data: null,
   currentView: "today",
   editingTaskId: null,
@@ -42,11 +42,15 @@ const characterBackgroundDatabase = "leylinebook-preferences";
 const characterBackgroundStore = "visual-assets";
 const characterBackgroundKey = "character-background";
 const characterOpacityKey = "leylinebook-character-opacity-v2";
+const characterPositionKey = "leylinebook-character-position-v1";
+const characterZoomKey = "leylinebook-character-zoom-v1";
 const characterThemeActiveKey = "leylinebook-character-theme-active";
 const maximumCharacterImageBytes = 12 * 1024 * 1024;
 const allowedCharacterImageTypes = new Set(["image/png", "image/jpeg", "image/webp"]);
 let characterImageUrl = null;
 let characterBackgroundRecord = null;
+let characterPositionValue = 50;
+let characterZoomValue = 100;
 
 function refreshThemeButtons() {
   const selectedTheme = document.body.dataset.theme;
@@ -124,6 +128,34 @@ function applyCharacterOpacity(value, persist = true) {
   document.querySelector("#characterOpacity").value = String(opacity);
   document.querySelector("#characterOpacityValue").value = `${opacity}%`;
   if (persist) localStorage.setItem(characterOpacityKey, String(opacity));
+}
+
+function updateCharacterImagePlacement() {
+  const zoom = characterZoomValue / 100;
+  const offset = characterPositionValue * (1 - zoom);
+  document.documentElement.style.setProperty("--character-zoom", String(zoom));
+  document.documentElement.style.setProperty("--character-position-offset", `${offset}%`);
+}
+
+function applyCharacterPosition(value, persist = true) {
+  const parsed = Number.parseInt(value, 10);
+  const pos = Number.isFinite(parsed) ? Math.min(100, Math.max(0, parsed)) : 50;
+  characterPositionValue = pos;
+  updateCharacterImagePlacement();
+  document.querySelector("#characterPosition").value = String(pos);
+  const label = pos === 0 ? "顶部" : pos === 100 ? "底部" : pos === 50 ? "居中" : `${pos}%`;
+  document.querySelector("#characterPositionValue").value = label;
+  if (persist) localStorage.setItem(characterPositionKey, String(pos));
+}
+
+function applyCharacterZoom(value, persist = true) {
+  const parsed = Number.parseInt(value, 10);
+  const zoom = Number.isFinite(parsed) ? Math.min(200, Math.max(30, parsed)) : 100;
+  characterZoomValue = zoom;
+  updateCharacterImagePlacement();
+  document.querySelector("#characterZoom").value = String(zoom);
+  document.querySelector("#characterZoomValue").value = `${zoom}%`;
+  if (persist) localStorage.setItem(characterZoomKey, String(zoom));
 }
 
 function updateCharacterThemeControls() {
@@ -328,6 +360,8 @@ async function removeCharacterBackground() {
 
 async function initializeCharacterBackground() {
   applyCharacterOpacity(localStorage.getItem(characterOpacityKey) || "72", false);
+  applyCharacterPosition(localStorage.getItem(characterPositionKey) || "50", false);
+  applyCharacterZoom(localStorage.getItem(characterZoomKey) || "100", false);
   try {
     const record = await readCharacterBackground();
     renderCharacterBackground(record);
@@ -337,6 +371,10 @@ async function initializeCharacterBackground() {
     renderCharacterBackground(null);
     showToast(error.message);
   }
+}
+
+function gameDate() {
+  return new Date(Date.now() - 4 * 60 * 60 * 1000);
 }
 
 function localDateString(value) {
@@ -439,7 +477,7 @@ function renderHistoryAccountFilter() {
 
 function makeProxyBadge(proxyUntil) {
   if (!proxyUntil) return "";
-  const today = localDateString(new Date());
+  const today = localDateString(gameDate());
   const daysLeft = Math.ceil((new Date(proxyUntil + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000);
   const cls = daysLeft < 0 ? "proxy-expired" : daysLeft <= 3 ? "proxy-urgent" : daysLeft <= 7 ? "proxy-warning" : "proxy-normal";
   const label = daysLeft < 0 ? `${formatActivityDate(proxyUntil)} 已到期` : `${formatActivityDate(proxyUntil)} 到期`;
@@ -585,7 +623,7 @@ function storyDeadlineForType(type) {
   const versionStart = new Date(`${window.versionStart}T00:00:00`);
   const halfEnd = new Date(versionStart);
   halfEnd.setDate(halfEnd.getDate() + 20);
-  const today = localDateString(new Date());
+  const today = localDateString(gameDate());
   const halfEndText = localDateString(halfEnd);
   return `${today <= halfEndText ? halfEndText : window.eventEnd}T15:00`;
 }
@@ -825,7 +863,7 @@ async function saveTaskNotes(event) {
 function openTransformerUsageDialog(task) {
   state.editingTransformerTaskId = task.id;
   const now = new Date();
-  if (state.selectedDate !== localDateString(now)) {
+  if (state.selectedDate !== localDateString(gameDate())) {
     const [hours, minutes] = [now.getHours(), now.getMinutes()];
     now.setFullYear(Number(state.selectedDate.slice(0, 4)), Number(state.selectedDate.slice(5, 7)) - 1, Number(state.selectedDate.slice(8, 10)));
     now.setHours(hours, minutes, 0, 0);
@@ -1186,7 +1224,7 @@ function calendarMonthsAgo(reference, months) {
 }
 
 async function loadRecentHistory(months) {
-  const end = new Date();
+  const end = gameDate();
   const start = calendarMonthsAgo(end, months);
   document.querySelector("#historyStart").value = localDateString(start);
   document.querySelector("#historyEnd").value = localDateString(end);
@@ -1198,7 +1236,7 @@ async function exportBackup() {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
-  link.download = `地脉簿备份-${localDateString(new Date())}.json`;
+  link.download = `地脉簿备份-${localDateString(gameDate())}.json`;
   link.click();
   URL.revokeObjectURL(link.href);
   showToast("备份已导出");
@@ -1285,7 +1323,7 @@ function updateProxyDaysLeft() {
   const val = document.querySelector("#accountProxyUntil").value;
   const el = document.querySelector("#proxyDaysLeft");
   if (!val) { el.textContent = ""; return; }
-  const today = localDateString(new Date());
+  const today = localDateString(gameDate());
   const days = Math.ceil((new Date(val + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000);
   if (days === 0) el.textContent = "今天到期";
   else if (days > 0) el.textContent = `距今 ${days} 天`;
@@ -1297,7 +1335,7 @@ function bindEvents() {
   bindAccountSorting();
   document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => switchView(item.dataset.view)));
   document.querySelector("#selectedDate").addEventListener("change", async (event) => { state.selectedDate = event.target.value; await loadState(); });
-  document.querySelector("#goToday").addEventListener("click", async () => { state.selectedDate = localDateString(new Date()); await loadState(); });
+  document.querySelector("#goToday").addEventListener("click", async () => { state.selectedDate = localDateString(gameDate()); await loadState(); });
   document.querySelector("#completeAll").addEventListener("click", async () => {
     const taskIds = state.data.dueTasks.filter((task) => !task.completed).map((task) => task.id);
     if (!taskIds.length) return;
@@ -1359,7 +1397,7 @@ function bindEvents() {
     const dateRow = document.querySelector("#activityDateRow");
     dateRow.classList.remove("hidden");
     if (!document.querySelector("#activityStartDate").value) {
-      document.querySelector("#activityStartDate").value = localDateString(new Date());
+      document.querySelector("#activityStartDate").value = localDateString(gameDate());
     }
     updateEndDateDisplay();
     document.querySelector("#addActivityBtn").disabled = false;
@@ -1394,7 +1432,7 @@ function bindEvents() {
   document.querySelector("#addActivityBtn").addEventListener("click", async () => {
     if (!state.selectedActivityType?.durationDays) { showToast("请选择活动类型和时长"); return; }
     const name = document.querySelector("#activityNameInput").value.trim() || state.selectedActivityType.category;
-    const startDate = document.querySelector("#activityStartDate").value || localDateString(new Date());
+    const startDate = document.querySelector("#activityStartDate").value || localDateString(gameDate());
     await api("/api/custom-tags", { method: "POST", body: JSON.stringify({ name, ...state.selectedActivityType, startDate }) }).catch((e) => { showToast(e.message); throw e; });
     document.querySelector("#activityNameInput").value = "";
     document.querySelectorAll(".activity-cat-btn").forEach((b) => b.classList.remove("selected"));
@@ -1455,6 +1493,8 @@ function bindEvents() {
   document.querySelector("#enableCharacterTheme").addEventListener("click", () => activateCharacterTheme().then(() => showToast("角色主题已启用")).catch((error) => showToast(error.message)));
   document.querySelector("#removeCharacterImage").addEventListener("click", () => removeCharacterBackground().catch((error) => showToast(error.message)));
   document.querySelector("#characterOpacity").addEventListener("input", (event) => applyCharacterOpacity(event.target.value));
+  document.querySelector("#characterPosition").addEventListener("input", (event) => applyCharacterPosition(event.target.value));
+  document.querySelector("#characterZoom").addEventListener("input", (event) => applyCharacterZoom(event.target.value));
   document.querySelectorAll("[data-theme-option]").forEach((button) => {
     button.addEventListener("click", () => {
       applyTheme(button.dataset.themeOption);
@@ -1475,7 +1515,7 @@ function startHeartbeat() {
 
 async function initialize() {
   applyTheme(localStorage.getItem("task-recorder-theme") || "green", false, false);
-  const now = new Date();
+  const now = gameDate();
   document.querySelector("#historyStart").value = "";
   document.querySelector("#historyEnd").value = localDateString(now);
   bindEvents();
@@ -1483,7 +1523,7 @@ async function initialize() {
   await initializeCharacterBackground();
   await loadState();
   window.setInterval(() => {
-    if (state.currentView === "today" && state.selectedDate === localDateString(new Date()) && !document.querySelector("dialog[open]")) {
+    if (state.currentView === "today" && state.selectedDate === localDateString(gameDate()) && !document.querySelector("dialog[open]")) {
       loadState().catch((error) => showToast(error.message));
     }
   }, 60000);
