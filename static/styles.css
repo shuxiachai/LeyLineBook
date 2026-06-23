@@ -270,6 +270,14 @@ nav { display: grid; gap: 7px; }
 .nav-item b { min-width: 24px; padding: 2px 7px; border-radius: 99px; background: #f0d7a5; color: #27493e; text-align: center; font-size: 12px; }
 .local-note { margin-top: auto; color: var(--sidebar-muted); font-size: 12px; padding: 15px 10px 0; border-top: 1px solid var(--line); }
 
+.update-banner:not([hidden]) { display: flex; align-items: center; gap: 14px; padding: 11px 20px; margin-bottom: 24px; background: color-mix(in srgb, var(--green) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--green) 22%, transparent); border-radius: 10px; font-size: .875rem; color: var(--ink); }
+.update-banner strong { color: var(--green); font-weight: 600; }
+.update-banner-actions { display: flex; gap: 8px; margin-left: auto; flex-shrink: 0; }
+.update-progress { margin-top: 10px; }
+.update-progress-bar { height: 5px; background: var(--green-soft); border-radius: 3px; overflow: hidden; }
+.update-progress-fill { height: 100%; width: 0; background: var(--green); border-radius: 3px; transition: width .25s ease; }
+.update-progress-label { margin: 5px 0 0; font-size: .8125rem; color: var(--muted); }
+
 main { position: relative; z-index: 1; min-width: 0; padding: 34px 42px 56px; }
 main > .topbar, main > .view { position: relative; z-index: 1; }
 .character-backdrop { position: fixed; z-index: 0; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; pointer-events: none; background: var(--bg); }
