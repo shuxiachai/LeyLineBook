@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 90
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1581,6 +1581,7 @@ def set_account_note_tag(account_id: int, payload: dict) -> None:
         else:
             current.discard(note_tag)
         ordered = [tag for tag in NOTE_TAGS if tag in current]
+        ordered += [note for note in current if note.startswith("周本:")]
         connection.execute(
             "UPDATE tasks SET notes = ? WHERE id = ?",
             ("、".join(ordered), task["id"]),

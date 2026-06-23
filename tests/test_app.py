@@ -524,6 +524,22 @@ class TaskRecorderTest(unittest.TestCase):
         }
         self.assertNotIn("体力", active_names)
 
+    def test_note_tag_toggle_preserves_weekly_boss_notes(self):
+        account = create_test_account({"name": "周本备注测试号"})
+        app.set_account_task_tag(account["id"], {"tag": "体力", "enabled": True})
+        stamina = next(
+            task for task in app.load_state(date.today().isoformat())["tasks"]
+            if task["account_id"] == account["id"] and task["name"] == "体力"
+        )
+        app.set_task_notes(stamina["id"], {"notes": ["周本:吞星之鲸"]})
+        app.set_account_note_tag(account["id"], {"tag": "好感队", "enabled": True})
+
+        updated = next(
+            task for task in app.load_state(date.today().isoformat())["tasks"]
+            if task["account_id"] == account["id"] and task["name"] == "体力"
+        )
+        self.assertEqual(updated["notes"], "好感队、周本:吞星之鲸")
+
     def test_new_task_and_notes_are_saved_together(self):
         account = create_test_account({"name": "任务草稿测试号"})
         before = [
