@@ -37,6 +37,24 @@ const abyssTaskTagDefinitions = [
   { name: "危战", label: "危战" },
 ];
 const noteTagDefinitions = ["好感队", "委托"];
+const noNotesTaskNames = new Set(["爱可菲料理", "狗粮"]);
+const WEEKLY_BOSS_PREFIX = "周本:";
+const weeklyBossNames = [
+  "北风的王狼",
+  "裂空的魔龙",
+  "「公子」",
+  "若陀龙王",
+  "「女士」",
+  "祸津御建鸣神命",
+  "「正机之神」",
+  "阿佩普的绿洲守望者",
+  "吞星之鲸",
+  "「仆人」",
+  "蚀灭的源焰之主",
+  "门扉前的弈局",
+  "「博士」",
+  "多托雷",
+];
 const availableThemes = new Set(["black", "white", "green", "blue", "purple", "rose", "amber"]);
 const characterBackgroundDatabase = "leylinebook-preferences";
 const characterBackgroundStore = "visual-assets";
@@ -504,7 +522,14 @@ function taskGroupsHtml(tasks, emptyText) {
       if (task.recurrence === "weekly" && task.event_end) dueText = `<small class="schedule-meta">下次刷新 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
       if (task.recurrence === "monthly" && task.event_end) dueText = `<small class="schedule-meta">截止 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
       if (task.recurrence === "version" && task.event_end) dueText = `<small class="schedule-meta">截止 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
-      const noteText = task.notes ? `<small class="task-note">备注：${escapeHtml(task.notes)}</small>` : "";
+      const noteText = (() => {
+        if (!task.notes) return "";
+        const allNotes = parseTaskNotes(task.notes);
+        const bosses = allNotes.filter((n) => n.startsWith(WEEKLY_BOSS_PREFIX)).map((n) => n.slice(WEEKLY_BOSS_PREFIX.length));
+        const regular = allNotes.filter((n) => !n.startsWith(WEEKLY_BOSS_PREFIX));
+        return (regular.length ? `<small class="task-note">备注：${escapeHtml(regular.join("、"))}</small>` : "")
+          + (bosses.length ? `<small class="task-note task-note-boss">周本：${escapeHtml(bosses.join("、"))}</small>` : "");
+      })();
       return `<button class="task-chip ${task.completed ? "completed" : ""}" data-toggle-task="${task.id}" data-completed="${task.completed}"><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
     }).join("");
     return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${group.tasks.length} 完成</span></div><div class="task-list">${chips}</div></article>`;
@@ -566,7 +591,8 @@ function renderAccounts() {
     const activeCustomTagIds = new Set(tasks.map((task) => task.custom_tag_id).filter(Boolean));
     const renderTaskTags = (definitions) => definitions.map((definition) => {
       const active = activeNames.has(definition.name);
-      return `<button class="config-tag ${active ? "active" : ""}" data-account-id="${account.id}" data-task-tag="${escapeHtml(definition.name)}" data-enabled="${active}" aria-pressed="${active}" title="${active ? "点击设置备注" : "点击添加任务"}" ${!account.active ? "disabled" : ""}>${active ? "✓ " : "+ "}${escapeHtml(definition.label)}</button>`;
+      const titleText = active ? (noNotesTaskNames.has(definition.name) ? "点击移除任务" : "点击设置备注") : "点击添加任务";
+      return `<button class="config-tag ${active ? "active" : ""}" data-account-id="${account.id}" data-task-tag="${escapeHtml(definition.name)}" data-enabled="${active}" aria-pressed="${active}" title="${titleText}" ${!account.active ? "disabled" : ""}>${active ? "✓ " : "+ "}${escapeHtml(definition.label)}</button>`;
     }).join("");
     const renderCustomTags = () => customTags.map((tag) => {
       const active = activeCustomTagIds.has(tag.id);
@@ -800,15 +826,25 @@ function parseTaskNotes(notes) {
 
 function renderTaskNoteEditor() {
   if (!state.editingTaskName) return;
-  const presets = state.editingTaskName === "体力" ? noteTagDefinitions : [];
+  const isStamina = state.editingTaskName === "体力";
+  const presets = isStamina ? noteTagDefinitions : [];
   const presetSection = document.querySelector("#presetNoteSection");
   presetSection.classList.toggle("hidden", presets.length === 0);
   document.querySelector("#presetNoteTags").innerHTML = presets.map((note) => {
     const active = state.editingTaskNotes.has(note);
     return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(note)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(note)}</button>`;
   }).join("");
+  const weeklyBossSection = document.querySelector("#weeklyBossSection");
+  weeklyBossSection.hidden = !isStamina;
+  if (isStamina) {
+    document.querySelector("#weeklyBossTags").innerHTML = weeklyBossNames.map((boss) => {
+      const key = WEEKLY_BOSS_PREFIX + boss;
+      const active = state.editingTaskNotes.has(key);
+      return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(key)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(boss)}</button>`;
+    }).join("");
+  }
   document.querySelector("#selectedNoteTags").innerHTML = [...state.editingTaskNotes]
-    .filter((note) => !presets.includes(note))
+    .filter((note) => !presets.includes(note) && !note.startsWith(WEEKLY_BOSS_PREFIX))
     .map((note) => `<button type="button" class="config-tag note active" data-task-note-choice="${escapeHtml(note)}" aria-label="移除备注 ${escapeHtml(note)}">× ${escapeHtml(note)}</button>`)
     .join("") || '<span class="muted-note">还没有其他备注</span>';
 }
@@ -1087,6 +1123,31 @@ async function handleAction(target) {
     const accountId = Number(taskTagButton.dataset.accountId);
     const taskName = taskTagButton.dataset.taskTag;
     const task = state.data.tasks.find((item) => item.account_id === accountId && item.name === taskName);
+    if (noNotesTaskNames.has(taskName)) {
+      if (!task) {
+        await api(`/api/accounts/${accountId}/task-tags`, {
+          method: "POST",
+          body: JSON.stringify({ tag: taskName, enabled: true, notes: [] }),
+        });
+        await loadState();
+        showToast(`已添加「${taskName}」任务`);
+      } else {
+        const confirmed = await confirmAction({
+          title: `移除「${taskName}」任务？`,
+          message: "移除后不再出现在任务列表中，已有的完成历史仍会保留。",
+          confirmText: "确认移除",
+        });
+        if (confirmed) {
+          await api(`/api/accounts/${accountId}/task-tags`, {
+            method: "POST",
+            body: JSON.stringify({ tag: taskName, enabled: false }),
+          });
+          await loadState();
+          showToast("任务已移除");
+        }
+      }
+      return;
+    }
     openTaskNoteDialog(task || { id: null, account_id: accountId, name: taskName, notes: "" });
     return;
   }

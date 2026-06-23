@@ -235,7 +235,7 @@
           <span class="settings-icon">新</span>
           <div>
             <h2>版本与更新</h2>
-            <p>当前版本 <strong>v1.5.0</strong>，更新从 GitHub Releases 自动获取，程序启动时会静默检查。</p>
+            <p>当前版本 <strong>v1.6.0</strong>，更新从 GitHub Releases 自动获取，程序启动时会静默检查。</p>
             <div class="update-progress" id="updateProgress" hidden>
               <div class="update-progress-bar"><div class="update-progress-fill" id="updateProgressFill"></div></div>
               <p class="update-progress-label" id="updateProgressLabel">正在下载…</p>
@@ -331,10 +331,14 @@
         <div><p class="eyebrow">任务设置</p><h2 id="taskNoteDialogTitle">任务备注</h2></div>
         <button type="button" class="icon-button" data-close-dialog="taskNoteDialog" aria-label="关闭">×</button>
       </div>
-      <p class="note-dialog-hint">点击保存后，任务和备注才会生效；取消不会修改当前配置。</p>
+
       <div id="presetNoteSection" class="note-editor-section">
         <strong>可选备注</strong>
         <div class="tag-list" id="presetNoteTags"></div>
+      </div>
+      <div id="weeklyBossSection" class="note-editor-section" hidden>
+        <strong>周本</strong>
+        <div class="tag-list" id="weeklyBossTags"></div>
       </div>
       <div class="note-editor-section">
         <strong>其他备注</strong>
