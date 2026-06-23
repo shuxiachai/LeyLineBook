@@ -37,7 +37,7 @@ const abyssTaskTagDefinitions = [
   { name: "危战", label: "危战" },
 ];
 const noteTagDefinitions = ["好感队", "委托"];
-const noNotesTaskNames = new Set(["爱可菲料理", "狗粮"]);
+const noNotesTaskNames = new Set(["爱可菲料理", "狗粮", "深境螺旋", "幻想真境剧诗", "危战"]);
 const WEEKLY_BOSS_PREFIX = "周本:";
 const weeklyBossNames = [
   "北风的王狼",
@@ -1201,7 +1201,7 @@ async function handleAction(target) {
   const purgeAccountId = target.closest("[data-purge-account]")?.dataset.purgeAccount;
   if (purgeAccountId) {
     const account = state.data.accounts.find((a) => a.id === Number(purgeAccountId));
-    const confirmed = await confirmAction({ title: "彻底删除号主", message: `确认删除「${account?.name}」？删除后不再显示，历史完成记录仍可查询。`, confirmLabel: "删除", danger: true });
+    const confirmed = await confirmAction({ title: "彻底删除号主", message: `确认删除「${account?.name}」？删除后不再显示，历史完成记录仍可查询。`, confirmText: "删除" });
     if (!confirmed) return;
     await api(`/api/accounts/${purgeAccountId}/purge`, { method: "POST", body: "{}" });
     await loadState();
