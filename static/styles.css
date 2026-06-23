@@ -352,6 +352,7 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .task-chip .task-title { display: block; }
 .task-chip .schedule-meta { display: block; margin-top: 3px; }
 .task-chip .task-note { display: block; margin-top: 2px; color: var(--green); font-size: 11px; }
+.task-chip .task-note-boss { color: var(--gold); }
 .compact .task-group { padding: 13px 16px; }
 .cooldown-toolbar { margin-top: 28px; }
 .cooldown-chip { cursor: default; }
@@ -434,7 +435,7 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .proxy-expired { background: #f0f0f0; color: var(--muted); text-decoration: line-through; }
 .account-sections { flex: 1; display: flex; align-items: center; gap: 22px; flex-wrap: wrap; min-width: 0; }
 .account-task-group { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; }
-.account-task-group-label { color: var(--green-dark); font-size: 15px; font-weight: 800; }
+.account-task-group-label { color: var(--green-dark); font-size: 19px; font-weight: 800; }
 .account-row .tag-list { gap: 7px; }
 .account-row .config-tag { padding: 6px 10px; white-space: nowrap; }
 .account-row .card-actions { flex-shrink: 0; margin-left: auto; }
