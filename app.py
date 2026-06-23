@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 90
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -153,12 +153,19 @@ def start_update() -> None:
                         f.write(chunk)
                         downloaded += len(chunk)
                         _update_state["downloaded"] = downloaded
+            latest_tag = _latest_release["latest"]
+            new_exe = current_exe.parent / f"LeyLineBook-v{latest_tag}-Windows-x64.exe"
             bat_path = Path(tempfile.gettempdir()) / "leylinebook_update.bat"
+            delete_old = (
+                f'if /i not "{current_exe}" == "{new_exe}" del "{current_exe}"\r\n'
+                if current_exe != new_exe else ""
+            )
             bat_path.write_text(
                 "@echo off\r\n"
                 "timeout /t 2 /nobreak > nul\r\n"
-                f'move /y "{temp_exe}" "{current_exe}"\r\n'
-                f'start "" "{current_exe}"\r\n'
+                f'move /y "{temp_exe}" "{new_exe}"\r\n'
+                f'start "" "{new_exe}"\r\n'
+                + delete_old +
                 'del "%~f0"\r\n',
                 encoding="mbcs",
             )
