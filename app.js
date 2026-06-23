@@ -1308,6 +1308,69 @@ async function resetDatabase() {
   showToast("数据库已清空");
 }
 
+let _updatePollTimer = null;
+
+async function checkForUpdate(silent = false) {
+  const btn = document.querySelector("#checkUpdateBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "检查中…"; }
+  try {
+    const result = await api("/api/update/check");
+    if (result.hasUpdate) {
+      document.querySelector("#updateBannerVersion").textContent = `v${result.latest}`;
+      document.querySelector("#updateBanner").hidden = false;
+    } else if (!silent) {
+      showToast(`已是最新版本 v${result.current}`);
+    }
+    return result;
+  } catch (error) {
+    if (!silent) showToast("检查更新失败：" + error.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "检查更新"; }
+  }
+}
+
+async function applyUpdate() {
+  document.querySelector("#updateBannerApplyBtn").disabled = true;
+  document.querySelector("#updateBannerApplyBtn").textContent = "更新中…";
+  const checkBtn = document.querySelector("#checkUpdateBtn");
+  if (checkBtn) checkBtn.disabled = true;
+  const progressBox = document.querySelector("#updateProgress");
+  const progressFill = document.querySelector("#updateProgressFill");
+  const progressLabel = document.querySelector("#updateProgressLabel");
+  if (progressBox) progressBox.hidden = false;
+  try {
+    await api("/api/update/apply", { method: "POST", body: "{}" });
+    _updatePollTimer = window.setInterval(async () => {
+      try {
+        const s = await api("/api/update/progress");
+        const pct = s.total ? Math.round(s.downloaded / s.total * 100) : 0;
+        if (progressFill) progressFill.style.width = `${pct}%`;
+        if (progressLabel) {
+          progressLabel.textContent = s.total ? `正在下载… ${pct}%` : "正在下载…";
+        }
+        if (s.status === "done") {
+          clearInterval(_updatePollTimer);
+          if (progressFill) progressFill.style.width = "100%";
+          if (progressLabel) progressLabel.textContent = "下载完成，正在重启…";
+        } else if (s.status === "error") {
+          clearInterval(_updatePollTimer);
+          showToast("更新失败：" + s.error);
+          if (progressBox) progressBox.hidden = true;
+          document.querySelector("#updateBannerApplyBtn").disabled = false;
+          document.querySelector("#updateBannerApplyBtn").textContent = "立即更新";
+          if (checkBtn) checkBtn.disabled = false;
+        }
+      } catch { /* ignore poll errors */ }
+    }, 500);
+  } catch (error) {
+    showToast("更新失败：" + error.message);
+    document.querySelector("#updateBannerApplyBtn").disabled = false;
+    document.querySelector("#updateBannerApplyBtn").textContent = "立即更新";
+    if (checkBtn) checkBtn.disabled = false;
+    if (progressBox) progressBox.hidden = true;
+  }
+}
+
 async function shutdownApp() {
   const confirmed = await confirmAction({
     title: "关闭地脉簿？",
@@ -1488,6 +1551,9 @@ function bindEvents() {
   document.querySelector("#resetDatabaseBtn").addEventListener("click", () => resetDatabase().catch((error) => showToast(error.message)));
   document.querySelector("#saveVersionDate").addEventListener("click", () => saveVersionDate().catch((error) => showToast(error.message)));
   document.querySelector("#shutdownApp").addEventListener("click", () => shutdownApp().catch((error) => showToast(error.message)));
+  document.querySelector("#checkUpdateBtn").addEventListener("click", () => checkForUpdate(false).catch((error) => showToast(error.message)));
+  document.querySelector("#updateBannerApplyBtn").addEventListener("click", () => applyUpdate().catch((error) => showToast(error.message)));
+  document.querySelector("#updateBannerDismissBtn").addEventListener("click", () => { document.querySelector("#updateBanner").hidden = true; });
   document.querySelector("#chooseCharacterImage").addEventListener("click", () => document.querySelector("#characterImageInput").click());
   document.querySelector("#characterImageInput").addEventListener("change", (event) => chooseCharacterBackground(event).catch((error) => showToast(error.message)));
   document.querySelector("#enableCharacterTheme").addEventListener("click", () => activateCharacterTheme().then(() => showToast("角色主题已启用")).catch((error) => showToast(error.message)));
@@ -1527,6 +1593,7 @@ async function initialize() {
       loadState().catch((error) => showToast(error.message));
     }
   }, 60000);
+  checkForUpdate(true).catch(() => {});
 }
 
 initialize().catch((error) => showToast(error.message));

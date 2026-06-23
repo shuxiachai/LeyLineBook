@@ -42,6 +42,14 @@
         </div>
       </header>
 
+      <div class="update-banner" id="updateBanner" hidden>
+        <span>发现新版本 <strong id="updateBannerVersion"></strong>，点击更新后程序将自动重启。</span>
+        <div class="update-banner-actions">
+          <button class="button primary" type="button" id="updateBannerApplyBtn">立即更新</button>
+          <button class="button ghost" type="button" id="updateBannerDismissBtn">稍后</button>
+        </div>
+      </div>
+
       <section class="view active" id="view-today">
         <div class="summary-grid">
           <article class="summary-card primary"><span>总进度</span><strong id="progressText">0 / 0</strong><div class="progress"><i id="progressBar"></i></div></article>
@@ -222,6 +230,18 @@
           <div><h2>导入备份</h2><p>从之前导出的 JSON 文件还原数据，当前所有数据将被替换。账号密码因加密绑定本机，导入后需重新填写。</p></div>
           <input type="file" id="importFileInput" accept=".json" hidden>
           <button class="button ghost" id="importBackupBtn">选择文件</button>
+        </div>
+        <div class="settings-card">
+          <span class="settings-icon">新</span>
+          <div>
+            <h2>版本与更新</h2>
+            <p>当前版本 <strong>v1.5.0</strong>，更新从 GitHub Releases 自动获取，程序启动时会静默检查。</p>
+            <div class="update-progress" id="updateProgress" hidden>
+              <div class="update-progress-bar"><div class="update-progress-fill" id="updateProgressFill"></div></div>
+              <p class="update-progress-label" id="updateProgressLabel">正在下载…</p>
+            </div>
+          </div>
+          <button class="button ghost" type="button" id="checkUpdateBtn">检查更新</button>
         </div>
         <div class="settings-card warning">
           <span class="settings-icon">安</span>
