@@ -835,7 +835,7 @@ function renderTaskNoteEditor() {
     return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(note)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(note)}</button>`;
   }).join("");
   const weeklyBossSection = document.querySelector("#weeklyBossSection");
-  weeklyBossSection.hidden = !isStamina;
+  weeklyBossSection.classList.toggle("hidden", !isStamina);
   if (isStamina) {
     document.querySelector("#weeklyBossTags").innerHTML = weeklyBossNames.map((boss) => {
       const key = WEEKLY_BOSS_PREFIX + boss;
