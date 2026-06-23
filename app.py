@@ -11,9 +11,12 @@ import re
 import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
+import tempfile
 import threading
 import time
+import urllib.request
 import webbrowser
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -59,8 +62,12 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 90
+APP_VERSION = "1.5.0"
+GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
+_latest_release: dict | None = None
+_update_state: dict = {"status": "idle", "downloaded": 0, "total": 0, "error": ""}
 
 
 def now_text() -> str:
@@ -73,6 +80,102 @@ def game_today() -> date:
 
 def today_text() -> str:
     return game_today().isoformat()
+
+
+def _parse_version(v: str) -> tuple:
+    try:
+        return tuple(int(x) for x in v.lstrip("v").split("."))
+    except ValueError:
+        return (0,)
+
+
+def _release_asset_download_url(assets: list[dict], latest_tag: str) -> str | None:
+    preferred_name = f"LeyLineBook-v{latest_tag}-Windows-x64.exe"
+    for asset in assets:
+        if asset.get("name") == preferred_name:
+            return asset.get("browser_download_url")
+    return next(
+        (
+            asset.get("browser_download_url")
+            for asset in assets
+            if str(asset.get("name", "")).lower().endswith(".exe")
+        ),
+        None,
+    )
+
+
+def check_for_update() -> dict:
+    global _latest_release
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers={"User-Agent": f"LeyLineBook/{APP_VERSION}"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode())
+    latest_tag = data.get("tag_name", "").lstrip("v")
+    assets = data.get("assets", [])
+    download_url = _release_asset_download_url(assets, latest_tag)
+    has_update = bool(latest_tag) and _parse_version(latest_tag) > _parse_version(APP_VERSION)
+    result = {
+        "current": APP_VERSION,
+        "latest": latest_tag,
+        "hasUpdate": has_update,
+        "downloadUrl": download_url if has_update else None,
+    }
+    _latest_release = result
+    return result
+
+
+def start_update() -> None:
+    global _update_state
+    if _update_state["status"] == "downloading":
+        return
+    if not _latest_release or not _latest_release.get("downloadUrl"):
+        raise ValueError("请先检查更新")
+    if not getattr(sys, "frozen", False):
+        raise ValueError("只有打包后的 EXE 才支持自动更新，请前往 GitHub 手动下载")
+    download_url: str = _latest_release["downloadUrl"]
+    current_exe = Path(sys.executable).resolve()
+    _update_state = {"status": "downloading", "downloaded": 0, "total": 0, "error": ""}
+
+    def _run() -> None:
+        global _update_state
+        try:
+            temp_exe = Path(tempfile.gettempdir()) / "LeyLineBook-update.exe"
+            req = urllib.request.Request(download_url, headers={"User-Agent": f"LeyLineBook/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                _update_state["total"] = total
+                downloaded = 0
+                with open(temp_exe, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        _update_state["downloaded"] = downloaded
+            bat_path = Path(tempfile.gettempdir()) / "leylinebook_update.bat"
+            bat_path.write_text(
+                "@echo off\r\n"
+                "timeout /t 2 /nobreak > nul\r\n"
+                f'move /y "{temp_exe}" "{current_exe}"\r\n'
+                f'start "" "{current_exe}"\r\n'
+                'del "%~f0"\r\n',
+                encoding="mbcs",
+            )
+            _update_state["status"] = "done"
+            time.sleep(0.4)
+            subprocess.Popen(
+                ["cmd.exe", "/c", str(bat_path)],
+                creationflags=0x00000008,
+                close_fds=True,
+            )
+            time.sleep(0.6)
+            os._exit(0)
+        except Exception as exc:
+            _update_state["status"] = "error"
+            _update_state["error"] = str(exc)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 class _DataBlob(ctypes.Structure):
@@ -1714,6 +1817,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         if method == "GET" and path == "/api/settings":
             self.send_json(get_schedule_settings())
             return
+        if method == "GET" and path == "/api/update/check":
+            self.send_json(check_for_update())
+            return
+        if method == "GET" and path == "/api/update/progress":
+            self.send_json(dict(_update_state))
+            return
         if method == "GET" and path == "/api/export":
             with db_connection() as connection:
                 data = {
@@ -1857,6 +1966,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/accounts/(\d+)/custom-tags", path)
         if match and method == "POST":
             set_account_custom_tag(int(match.group(1)), payload)
+            self.send_json(None)
+            return
+        if method == "POST" and path == "/api/update/apply":
+            start_update()
             self.send_json(None)
             return
         if method == "POST" and path == "/api/reset":

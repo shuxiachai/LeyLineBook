@@ -1,4 +1,5 @@
 import errno
+import json
 import sqlite3
 import sys
 import tempfile
@@ -832,6 +833,39 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertIsInstance(server, FakeServer)
         self.assertEqual(selected_port, 49152)
         self.assertEqual(FakeServer.attempts, [("127.0.0.1", 8765), ("127.0.0.1", 0)])
+
+    def test_update_check_prefers_matching_windows_exe_asset(self):
+        class FakeResponse:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "tag_name": "v1.5.0",
+                        "assets": [
+                            {"name": "LeyLineBook-helper.exe", "browser_download_url": "wrong"},
+                            {
+                                "name": "LeyLineBook-v1.5.0-Windows-x64.exe",
+                                "browser_download_url": "right",
+                            },
+                        ],
+                    }
+                ).encode()
+
+        with patch.object(app, "APP_VERSION", "1.4.0"), patch.object(
+            app.urllib.request, "urlopen", return_value=FakeResponse()
+        ):
+            result = app.check_for_update()
+
+        self.assertTrue(result["hasUpdate"])
+        self.assertEqual(result["latest"], "1.5.0")
+        self.assertEqual(result["downloadUrl"], "right")
 
 
 if __name__ == "__main__":
