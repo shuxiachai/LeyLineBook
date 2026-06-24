@@ -8,6 +8,8 @@ const state = {
   editingTaskIsNew: false,
   editingTaskNotes: new Set(),
   editingTransformerTaskId: null,
+  editingExpeditionTaskId: null,
+  editingExpeditionHours: 20,
   editingCredentialsAccountId: null,
   accountDrag: null,
   selectedActivityType: null,
@@ -20,7 +22,6 @@ const recurrenceLabels = {
   interval: "固定间隔",
   monthly: "每月固定日期",
   version: "版本周期",
-  manual: "随时记录",
   once: "一次性",
 };
 
@@ -30,6 +31,7 @@ const dailyTaskTagDefinitions = [
   { name: "质变仪", label: "质变仪" },
   { name: "壶", label: "壶" },
   { name: "爱可菲料理", label: "爱可菲料理" },
+  { name: "探索派遣", label: "探索派遣" },
 ];
 const abyssTaskTagDefinitions = [
   { name: "深境螺旋", label: "深境螺旋" },
@@ -39,6 +41,8 @@ const abyssTaskTagDefinitions = [
 const noteTagDefinitions = ["好感队", "委托"];
 const noNotesTaskNames = new Set(["爱可菲料理", "狗粮", "深境螺旋", "幻想真境剧诗", "危战"]);
 const WEEKLY_BOSS_PREFIX = "周本:";
+const EXPEDITION_PREFIX = "派遣:";
+const expeditionDurations = ["20小时", "15小时"];
 const weeklyBossNames = [
   "北风的王狼",
   "裂空的魔龙",
@@ -421,6 +425,19 @@ function formatCooldown(seconds) {
   return [days ? `${days}天` : "", hours ? `${hours}小时` : "", (!days && minutes) ? `${minutes}分钟` : ""].filter(Boolean).join(" ") || "即将可用";
 }
 
+function formatCountdown(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds || 0)));
+  if (s === 0) return "即将可用";
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if (days > 0) return `${days}天 ${hours}小时`;
+  if (hours > 0) return `${hours}小时 ${minutes}分钟`;
+  if (minutes > 0) return `${minutes}分${secs}秒`;
+  return `${secs}秒`;
+}
+
 function formatActivityDate(isoDate) {
   const d = new Date(isoDate + "T00:00:00");
   return `${d.getMonth() + 1}月${d.getDate()}日`;
@@ -515,10 +532,11 @@ function taskGroupsHtml(tasks, emptyText) {
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
-    const chips = group.tasks.map((task) => {
+    const isInactive = (t) => t.completed || (t.cooldown_remaining_seconds || 0) > 0;
+    const chips = [...group.tasks].sort((a, b) => isInactive(a) - isInactive(b)).map((task) => {
       let dueText = "";
-      if (task.name === "质变仪" && task.available_at) dueText = `<small class="schedule-meta">下次可用 ${escapeHtml(formatLocalDateTime(task.available_at))}</small>`;
-      else if (task.recurrence === "interval" && task.next_due) dueText = `<small class="schedule-meta">到期 ${escapeHtml(task.next_due)}</small>`;
+      if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
+      else if (task.recurrence === "interval" && task.next_due && task.name !== "质变仪" && task.name !== "探索派遣") dueText = `<small class="schedule-meta">到期 ${escapeHtml(task.next_due)}</small>`;
       if (task.recurrence === "weekly" && task.event_end) dueText = `<small class="schedule-meta">下次刷新 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
       if (task.recurrence === "monthly" && task.event_end) dueText = `<small class="schedule-meta">截止 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
       if (task.recurrence === "version" && task.event_end) dueText = `<small class="schedule-meta">截止 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
@@ -526,11 +544,13 @@ function taskGroupsHtml(tasks, emptyText) {
         if (!task.notes) return "";
         const allNotes = parseTaskNotes(task.notes);
         const bosses = allNotes.filter((n) => n.startsWith(WEEKLY_BOSS_PREFIX)).map((n) => n.slice(WEEKLY_BOSS_PREFIX.length));
-        const regular = allNotes.filter((n) => !n.startsWith(WEEKLY_BOSS_PREFIX));
+        const regular = allNotes.filter((n) => !n.startsWith(WEEKLY_BOSS_PREFIX) && !n.startsWith(EXPEDITION_PREFIX));
         return (regular.length ? `<small class="task-note">备注：${escapeHtml(regular.join("、"))}</small>` : "")
           + (bosses.length ? `<small class="task-note task-note-boss">周本：${escapeHtml(bosses.join("、"))}</small>` : "");
       })();
-      return `<button class="task-chip ${task.completed ? "completed" : ""}" data-toggle-task="${task.id}" data-completed="${task.completed}"><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
+      const expeditionCooling = (task.name === "探索派遣" || task.name === "质变仪") && (task.cooldown_remaining_seconds || 0) > 0 && !task.completed;
+      const chipClass = expeditionCooling ? "expedition-cooling" : (task.completed ? "completed" : "");
+      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
     }).join("");
     return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${group.tasks.length} 完成</span></div><div class="task-list">${chips}</div></article>`;
   }).join("");
@@ -539,13 +559,39 @@ function taskGroupsHtml(tasks, emptyText) {
 function coolingTasksHtml(tasks) {
   const groups = groupTasks(tasks);
   return [...groups.entries()].map(([accountId, group]) => {
-    const chips = group.tasks.map((task) => `<div class="task-chip cooldown-chip"><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span><small class="schedule-meta">可用时间 ${escapeHtml(formatLocalDateTime(task.available_at))}</small><small class="schedule-meta cooldown-remaining">剩余 ${escapeHtml(formatCooldown(task.cooldown_remaining_seconds))}</small></span></div>`).join("");
+    const chips = group.tasks.map((task) => `<div class="task-chip cooldown-chip"><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span><small class="schedule-meta" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small></span></div>`).join("");
     return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}</h3></div><div class="task-list">${chips}</div></article>`;
   }).join("");
 }
 
+let _cooldownTimer = null;
+
+function startCooldownTicker() {
+  if (_cooldownTimer) { clearInterval(_cooldownTimer); _cooldownTimer = null; }
+  if (!document.querySelectorAll("[data-available-at]").length) return;
+  _cooldownTimer = setInterval(() => {
+    let anyRemaining = false;
+    for (const el of document.querySelectorAll("[data-available-at]")) {
+      const remaining = (new Date(el.dataset.availableAt) - Date.now()) / 1000;
+      if (remaining > 0) {
+        el.textContent = `还剩 ${formatCountdown(remaining)}`;
+        anyRemaining = true;
+      } else {
+        el.textContent = "即将可用";
+      }
+    }
+    if (!anyRemaining) {
+      clearInterval(_cooldownTimer);
+      _cooldownTimer = null;
+      if (state.currentView === "today" && state.selectedDate === localDateString(gameDate())) {
+        loadState().catch(() => {});
+      }
+    }
+  }, 1000);
+}
+
 function renderToday() {
-  const { summary, dueTasks, manualTasks, coolingTasks = [] } = state.data;
+  const { summary, dueTasks, coolingTasks = [] } = state.data;
   const dailyTaskNames = new Set(dailyTaskTagDefinitions.map((task) => task.name));
   const fallbackDailyTasks = dueTasks.filter((task) => dailyTaskNames.has(task.name));
   const dailyTotal = Number.isFinite(summary.dailyTotal) ? summary.dailyTotal : fallbackDailyTasks.length;
@@ -565,13 +611,17 @@ function renderToday() {
   document.querySelector("#dueTaskGroups").innerHTML = taskGroupsHtml(dueTasks, "这一天没有待办任务，轻松收工。");
   document.querySelector("#cooldownSection").classList.toggle("hidden", coolingTasks.length === 0);
   document.querySelector("#cooldownTaskGroups").innerHTML = coolingTasksHtml(coolingTasks);
-  document.querySelector("#manualTaskGroups").innerHTML = taskGroupsHtml(manualTasks, "还没有配置专项任务。");
   renderScheduleSettings();
+  startCooldownTicker();
 }
 
 function taskDescription(task) {
   if (task.recurrence === "weekly") return "每周一 04:00 刷新";
-  if (task.name === "质变仪" && task.available_at) return `168 小时冷却 · 下次 ${formatLocalDateTime(task.available_at)}`;
+  if (task.name === "质变仪" && task.available_at) return `168 小时冷却 · 下次可用 ${formatLocalDateTime(task.available_at)}`;
+  if (task.name === "探索派遣") {
+    const h = expeditionHoursFromNotes(task.notes);
+    return task.available_at ? `${h}小时冷却 · 下次 ${formatLocalDateTime(task.available_at)}` : `每 ${h} 小时收取一次`;
+  }
   if (task.recurrence === "interval") return `每 ${task.interval_days} 天 · 下次 ${task.next_due}`;
   if (task.recurrence === "monthly") return `每月 ${task.monthly_day} 日刷新 · 下次 ${task.next_due}`;
   if (task.recurrence === "version") {
@@ -824,9 +874,15 @@ function parseTaskNotes(notes) {
   return String(notes || "").split(/[、,，]/).map((item) => item.trim()).filter(Boolean);
 }
 
+function expeditionHoursFromNotes(notes) {
+  if (parseTaskNotes(notes).includes(EXPEDITION_PREFIX + "15小时")) return 15;
+  return 20;
+}
+
 function renderTaskNoteEditor() {
   if (!state.editingTaskName) return;
   const isStamina = state.editingTaskName === "体力";
+  const isExpedition = state.editingTaskName === "探索派遣";
   const presets = isStamina ? noteTagDefinitions : [];
   const presetSection = document.querySelector("#presetNoteSection");
   presetSection.classList.toggle("hidden", presets.length === 0);
@@ -843,8 +899,17 @@ function renderTaskNoteEditor() {
       return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(key)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(boss)}</button>`;
     }).join("");
   }
+  const expeditionSection = document.querySelector("#expeditionSection");
+  expeditionSection.classList.toggle("hidden", !isExpedition);
+  if (isExpedition) {
+    document.querySelector("#expeditionTags").innerHTML = expeditionDurations.map((dur) => {
+      const key = EXPEDITION_PREFIX + dur;
+      const active = state.editingTaskNotes.has(key);
+      return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(key)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(dur)}</button>`;
+    }).join("");
+  }
   document.querySelector("#selectedNoteTags").innerHTML = [...state.editingTaskNotes]
-    .filter((note) => !presets.includes(note) && !note.startsWith(WEEKLY_BOSS_PREFIX))
+    .filter((note) => !presets.includes(note) && !note.startsWith(WEEKLY_BOSS_PREFIX) && !note.startsWith(EXPEDITION_PREFIX))
     .map((note) => `<button type="button" class="config-tag note active" data-task-note-choice="${escapeHtml(note)}" aria-label="移除备注 ${escapeHtml(note)}">× ${escapeHtml(note)}</button>`)
     .join("") || '<span class="muted-note">还没有其他备注</span>';
 }
@@ -918,6 +983,33 @@ async function saveTransformerUsage(event) {
   document.querySelector("#transformerUsageDialog").close();
   await loadState();
   showToast("已记录使用时间，168 小时后可再次使用");
+}
+
+function openExpeditionUsageDialog(task) {
+  state.editingExpeditionTaskId = task.id;
+  state.editingExpeditionHours = expeditionHoursFromNotes(task.notes);
+  const now = new Date();
+  if (state.selectedDate !== localDateString(gameDate())) {
+    const [hours, minutes] = [now.getHours(), now.getMinutes()];
+    now.setFullYear(Number(state.selectedDate.slice(0, 4)), Number(state.selectedDate.slice(5, 7)) - 1, Number(state.selectedDate.slice(8, 10)));
+    now.setHours(hours, minutes, 0, 0);
+  }
+  document.querySelector("#expeditionUsedAt").value = localDateTimeInputValue(now);
+  document.querySelector("#expeditionUsageHint").textContent =
+    `下次可收取时间将从实际收取时间开始计算 ${state.editingExpeditionHours} 小时。`;
+  document.querySelector("#expeditionUsageDialog").showModal();
+}
+
+async function saveExpeditionUsage(event) {
+  event.preventDefault();
+  const usedAt = document.querySelector("#expeditionUsedAt").value;
+  await api(`/api/tasks/${state.editingExpeditionTaskId}/toggle`, {
+    method: "POST",
+    body: JSON.stringify({ date: state.selectedDate, completed: true, usedAt }),
+  });
+  document.querySelector("#expeditionUsageDialog").close();
+  await loadState();
+  showToast(`已记录收取时间，${state.editingExpeditionHours} 小时后可再次收取`);
 }
 
 async function removeConfiguredTask() {
@@ -1085,8 +1177,16 @@ async function handleAction(target) {
 
   const noteChoice = target.closest("[data-task-note-choice]")?.dataset.taskNoteChoice;
   if (noteChoice) {
-    if (state.editingTaskNotes.has(noteChoice)) state.editingTaskNotes.delete(noteChoice);
-    else state.editingTaskNotes.add(noteChoice);
+    if (state.editingTaskNotes.has(noteChoice)) {
+      state.editingTaskNotes.delete(noteChoice);
+    } else {
+      if (noteChoice.startsWith(EXPEDITION_PREFIX)) {
+        for (const note of [...state.editingTaskNotes]) {
+          if (note.startsWith(EXPEDITION_PREFIX)) state.editingTaskNotes.delete(note);
+        }
+      }
+      state.editingTaskNotes.add(noteChoice);
+    }
     renderTaskNoteEditor();
     return;
   }
@@ -1159,6 +1259,10 @@ async function handleAction(target) {
     const task = state.data.dueTasks.find((item) => item.id === Number(taskId));
     if (completed && task?.name === "质变仪") {
       openTransformerUsageDialog(task);
+      return;
+    }
+    if (completed && task?.name === "探索派遣") {
+      openExpeditionUsageDialog(task);
       return;
     }
     await api(`/api/tasks/${taskId}/toggle`, { method: "POST", body: JSON.stringify({ date: state.selectedDate, completed }) });
@@ -1593,6 +1697,7 @@ function bindEvents() {
   document.querySelector("#taskForm").addEventListener("submit", (event) => saveTask(event).catch((error) => showToast(error.message)));
   document.querySelector("#taskNoteForm").addEventListener("submit", (event) => saveTaskNotes(event).catch((error) => showToast(error.message)));
   document.querySelector("#transformerUsageForm").addEventListener("submit", (event) => saveTransformerUsage(event).catch((error) => showToast(error.message)));
+  document.querySelector("#expeditionUsageForm").addEventListener("submit", (event) => saveExpeditionUsage(event).catch((error) => showToast(error.message)));
   document.querySelector("#addCustomTaskNote").addEventListener("click", addCustomTaskNote);
   document.querySelector("#customTaskNote").addEventListener("keydown", (event) => {
     if (event.key === "Enter") {

@@ -76,13 +76,6 @@
           <div id="cooldownTaskGroups" class="task-groups compact"></div>
         </div>
 
-        <div class="section-toolbar secondary-toolbar">
-          <div>
-            <h2>专项记录</h2>
-            <p>深境螺旋、剧诗、危战等按需要记录，不计入今日待办</p>
-          </div>
-        </div>
-        <div id="manualTaskGroups" class="task-groups compact"></div>
       </section>
 
       <section class="view" id="view-story">
@@ -139,7 +132,7 @@
 
       <section class="view" id="view-history">
         <div class="section-toolbar">
-          <div><h2>完成历史</h2><p>查看补记、日常和专项任务的完成记录</p></div>
+          <div><h2>完成历史</h2><p>查看补记和日常任务的完成记录</p></div>
           <div class="date-range">
             <button type="button" class="button ghost history-quick" data-history-months="1">最近一个月</button>
             <button type="button" class="button ghost history-quick" data-history-months="6">最近半年</button>
@@ -235,7 +228,7 @@
           <span class="settings-icon">新</span>
           <div>
             <h2>版本与更新</h2>
-            <p>当前版本 <strong>v1.8.0</strong>，更新从 GitHub Releases 自动获取，程序启动时会静默检查。</p>
+            <p>当前版本 <strong>v1.9.0</strong>，更新从 GitHub Releases 自动获取，程序启动时会静默检查。</p>
             <div class="update-progress" id="updateProgress" hidden>
               <div class="update-progress-bar"><div class="update-progress-fill" id="updateProgressFill"></div></div>
               <p class="update-progress-label" id="updateProgressLabel">正在下载…</p>
@@ -310,7 +303,6 @@
           <option value="interval">固定间隔</option>
           <option value="monthly">每月固定日期</option>
           <option value="version">版本周期</option>
-          <option value="manual">随时记录</option>
           <option value="once">一次性任务</option>
         </select>
       </label>
@@ -339,6 +331,10 @@
       <div id="weeklyBossSection" class="note-editor-section hidden">
         <strong>周本</strong>
         <div class="tag-list" id="weeklyBossTags"></div>
+      </div>
+      <div id="expeditionSection" class="note-editor-section hidden">
+        <strong>派遣周期</strong>
+        <div class="tag-list" id="expeditionTags"></div>
       </div>
       <div class="note-editor-section">
         <strong>其他备注</strong>
@@ -382,6 +378,21 @@
       <label>实际使用时间<input type="datetime-local" id="transformerUsedAt" required></label>
       <div class="dialog-actions">
         <button type="button" class="button ghost" data-close-dialog="transformerUsageDialog">取消</button>
+        <button type="submit" class="button primary">确认完成</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="expeditionUsageDialog" class="usage-time-dialog">
+    <form method="dialog" id="expeditionUsageForm">
+      <div class="dialog-head">
+        <div><p class="eyebrow">记录完成</p><h2>探索派遣收取</h2></div>
+        <button type="button" class="icon-button" data-close-dialog="expeditionUsageDialog" aria-label="关闭">×</button>
+      </div>
+      <p class="note-dialog-hint" id="expeditionUsageHint"></p>
+      <label>实际收取时间<input type="datetime-local" id="expeditionUsedAt" required></label>
+      <div class="dialog-actions">
+        <button type="button" class="button ghost" data-close-dialog="expeditionUsageDialog">取消</button>
         <button type="submit" class="button primary">确认完成</button>
       </div>
     </form>
