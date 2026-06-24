@@ -733,10 +733,56 @@ class TaskRecorderTest(unittest.TestCase):
             tasks,
             [
                 "体力", "狗粮", "质变仪", "壶", "爱可菲料理",
+                "探索派遣",
                 "顺序活动甲", "顺序活动乙",
                 "深境螺旋", "幻想真境剧诗", "危战",
             ],
         )
+
+    def test_expedition_uses_selected_hour_cooldown(self):
+        account = create_test_account({"name": "派遣测试号"})
+        app.set_account_task_tag(
+            account["id"],
+            {"tag": "探索派遣", "enabled": True, "notes": ["派遣:15小时"]},
+        )
+        selected_date = date.today().isoformat()
+        task = next(
+            item for item in app.load_state(selected_date)["dueTasks"]
+            if item["account_id"] == account["id"] and item["name"] == "探索派遣"
+        )
+        used_at = datetime.now().replace(second=0, microsecond=0)
+
+        app.toggle_task(task["id"], selected_date, True, used_at.isoformat(timespec="minutes"))
+
+        with app.db_connection() as connection:
+            next_due = connection.execute(
+                "SELECT next_due FROM tasks WHERE id = ?", (task["id"],)
+            ).fetchone()[0]
+        self.assertEqual(
+            next_due,
+            (used_at + timedelta(hours=15)).isoformat(timespec="minutes"),
+        )
+        completed = next(
+            item for item in app.load_state(selected_date)["dueTasks"]
+            if item["id"] == task["id"]
+        )
+        self.assertTrue(completed["completed"])
+
+    def test_manual_tasks_are_migrated_to_visible_one_time_tasks(self):
+        account = create_test_account({"name": "旧任务迁移测试号"})
+        with app.db_connection() as connection:
+            task_id = connection.execute(
+                """
+                INSERT INTO tasks(account_id, name, recurrence, created_at)
+                VALUES(?, '旧专项任务', 'manual', ?)
+                """,
+                (account["id"], app.now_text()),
+            ).lastrowid
+            app.migrate_manual_tasks_to_once(connection)
+
+        state = app.load_state(date.today().isoformat())
+        migrated = next(item for item in state["dueTasks"] if item["id"] == task_id)
+        self.assertEqual(migrated["recurrence"], "once")
 
     def test_story_bonus_deadlines_follow_version_phases(self):
         self.assertEqual(

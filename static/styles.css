@@ -353,6 +353,8 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .task-chip .schedule-meta { display: block; margin-top: 3px; }
 .task-chip .task-note { display: block; margin-top: 2px; color: var(--green); font-size: 11px; }
 .task-chip .task-note-boss { color: var(--gold); }
+.task-chip .task-note-expedition { color: var(--muted); }
+.task-chip.expedition-cooling { opacity: 0.6; cursor: default; pointer-events: none; }
 .compact .task-group { padding: 13px 16px; }
 .cooldown-toolbar { margin-top: 28px; }
 .cooldown-chip { cursor: default; }

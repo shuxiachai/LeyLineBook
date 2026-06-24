@@ -42,6 +42,7 @@ if APP_DIR != DATA_DIR and _legacy_db.exists() and not DB_PATH.exists():
 TASK_TAG_PRESETS = {
     "体力": {"recurrence": "daily"},
     "狗粮": {"recurrence": "daily"},
+    "探索派遣": {"recurrence": "interval"},
     "质变仪": {"recurrence": "interval", "interval_days": 7},
     "壶": {"recurrence": "interval", "interval_days": 3},
     "爱可菲料理": {"recurrence": "weekly"},
@@ -53,16 +54,16 @@ RESERVED_ACTIVITY_NAMES = frozenset(
     (*TASK_TAG_PRESETS.keys(), "剧诗", "深渊", "捡材料", "尘歌壶")
 )
 _TASK_SORT_ORDER = {
-    "体力": 0, "狗粮": 1, "质变仪": 2, "壶": 3, "爱可菲料理": 4,
+    "体力": 0, "狗粮": 1, "质变仪": 2, "壶": 3, "爱可菲料理": 4, "探索派遣": 5,
     "深境螺旋": 10, "幻想真境剧诗": 11, "危战": 12,
 }
-_ACTIVITY_TASK_SORT_ORDER = 5
+_ACTIVITY_TASK_SORT_ORDER = 6
 NOTE_TAGS = ("好感队", "委托")
-DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理"))
+DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"))
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 90
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -320,6 +321,7 @@ def initialize_database() -> None:
         migrate_task_preset_sort_order(connection)
 
         configure_fixed_tasks(connection)
+        migrate_manual_tasks_to_once(connection)
         configure_daily_task_classification(connection)
         configure_task_groups(connection)
         migrate_group_notes_to_tasks(connection)
@@ -486,6 +488,17 @@ def configure_fixed_tasks(connection: sqlite3.Connection) -> None:
         WHERE name = '危战'
         """,
         (war_due,),
+    )
+
+
+def migrate_manual_tasks_to_once(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE tasks
+        SET recurrence = 'once', next_due = COALESCE(next_due, ?)
+        WHERE recurrence = 'manual'
+        """,
+        (game_today().isoformat(),),
     )
 
 
@@ -808,6 +821,13 @@ def cleanup_expired_activities() -> None:
             connection.execute("DELETE FROM custom_task_tags WHERE id = ?", (tag["id"],))
 
 
+def _expedition_hours_from_notes(notes: str) -> int:
+    for part in str(notes or "").split("、"):
+        if part == "派遣:15小时":
+            return 15
+    return 20
+
+
 def load_state(selected_date: str) -> dict:
     cleanup_expired_activities()
     date.fromisoformat(selected_date)
@@ -887,27 +907,24 @@ def load_state(selected_date: str) -> dict:
                 (war_window["eventStart"], war_window["eventEnd"]),
             )
         }
-        completed_weekly_task_ids = {
-            row[0]
+        completed_weekly_task_dates = {
+            row[0]: row[1]
             for row in connection.execute(
-                "SELECT task_id FROM task_records WHERE note = ?",
+                "SELECT task_id, task_date FROM task_records WHERE note = ?",
                 (selected_week_key,),
             )
         }
     due_tasks = []
     cooling_tasks = []
-    manual_tasks = []
     all_tasks = []
     for task in tasks:
         task["completed"] = bool(task["completed"])
         task["completed_ever"] = bool(task["completed_ever"])
         recurrence = task["recurrence"]
         if recurrence == "weekly":
-            task["completed"] = task["id"] in completed_weekly_task_ids
+            task["completed"] = task["id"] in completed_weekly_task_dates
         all_tasks.append(task)
-        if recurrence == "manual":
-            manual_tasks.append(task)
-        elif recurrence == "daily":
+        if recurrence == "daily":
             due_tasks.append(task)
         elif recurrence == "weekly":
             next_refresh = weekly_cycle_start(selected_day) + timedelta(days=7)
@@ -915,7 +932,7 @@ def load_state(selected_date: str) -> dict:
             task["event_end_time"] = "04:00"
             due_tasks.append(task)
         elif recurrence == "interval":
-            precise_due = exact_due_moment(task["next_due"]) if task["name"] == "质变仪" else None
+            precise_due = exact_due_moment(task["next_due"]) if task["name"] in ("质变仪", "探索派遣") else None
             is_due = bool(
                 task["next_due"]
                 and (
@@ -966,7 +983,6 @@ def load_state(selected_date: str) -> dict:
         "tasks": all_tasks,
         "dueTasks": due_tasks,
         "coolingTasks": cooling_tasks,
-        "manualTasks": manual_tasks,
         "accountNotes": account_notes,
         "customTags": custom_tags,
         "storyTasks": list_story_tasks(),
@@ -1409,8 +1425,8 @@ def reorder_accounts(payload: dict) -> None:
 def create_task(payload: dict) -> dict:
     account_id = int(payload.get("accountId", 0))
     name = require_text(payload, "name")
-    recurrence = str(payload.get("recurrence", "manual"))
-    if recurrence not in {"daily", "weekly", "interval", "manual", "once", "monthly", "version"}:
+    recurrence = str(payload.get("recurrence", "once"))
+    if recurrence not in {"daily", "weekly", "interval", "once", "monthly", "version"}:
         raise ValueError("任务类型无效")
     interval_days = None
     monthly_day = None
@@ -1450,8 +1466,8 @@ def create_task(payload: dict) -> dict:
 
 def update_task(task_id: int, payload: dict) -> None:
     name = require_text(payload, "name")
-    recurrence = str(payload.get("recurrence", "manual"))
-    if recurrence not in {"daily", "weekly", "interval", "manual", "once", "monthly", "version"}:
+    recurrence = str(payload.get("recurrence", "once"))
+    if recurrence not in {"daily", "weekly", "interval", "once", "monthly", "version"}:
         raise ValueError("任务类型无效")
     interval_days = None
     monthly_day = None
@@ -1581,7 +1597,7 @@ def set_account_note_tag(account_id: int, payload: dict) -> None:
         else:
             current.discard(note_tag)
         ordered = [tag for tag in NOTE_TAGS if tag in current]
-        ordered += [note for note in current if note.startswith("周本:")]
+        ordered += [note for note in current if note.startswith("周本:") or note.startswith("派遣:")]
         connection.execute(
             "UPDATE tasks SET notes = ? WHERE id = ?",
             ("、".join(ordered), task["id"]),
@@ -1691,9 +1707,9 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> 
 
         if completed and not existing:
             previous_due = task["next_due"]
-            transformer_used_at = None
-            if task["name"] == "质变仪" and task["recurrence"] == "interval":
-                transformer_used_at = optional_local_datetime(used_at) or datetime.now().replace(
+            precise_used_at = None
+            if task["name"] in ("质变仪", "探索派遣") and task["recurrence"] == "interval":
+                precise_used_at = optional_local_datetime(used_at) or datetime.now().replace(
                     second=0, microsecond=0
                 )
             connection.execute(
@@ -1704,14 +1720,18 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> 
                 (
                     task_id,
                     task_date,
-                    transformer_used_at.isoformat(timespec="seconds") if transformer_used_at else now_text(),
+                    precise_used_at.isoformat(timespec="seconds") if precise_used_at else now_text(),
                     previous_due,
                     cycle_key,
                 ),
             )
             if task["recurrence"] == "interval":
-                if transformer_used_at:
-                    next_due = transformer_used_at + timedelta(hours=24 * task["interval_days"])
+                if precise_used_at and task["name"] == "质变仪":
+                    next_due = precise_used_at + timedelta(hours=24 * task["interval_days"])
+                    next_due_text = next_due.isoformat(timespec="minutes")
+                elif precise_used_at and task["name"] == "探索派遣":
+                    hours = _expedition_hours_from_notes(task["notes"])
+                    next_due = precise_used_at + timedelta(hours=hours)
                     next_due_text = next_due.isoformat(timespec="minutes")
                 else:
                     base_date = max(date.fromisoformat(previous_due), date.fromisoformat(task_date))
