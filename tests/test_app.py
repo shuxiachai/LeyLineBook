@@ -236,16 +236,14 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertFalse(task["completed"])
 
         app.toggle_task(task["id"], wednesday, True)
-        friday_task = next(
-            item for item in app.load_state(friday)["dueTasks"] if item["id"] == task["id"]
-        )
-        self.assertTrue(friday_task["completed"])
+        friday_ids = {item["id"] for item in app.load_state(friday)["dueTasks"]}
+        self.assertNotIn(task["id"], friday_ids)
         monday_task = next(
             item for item in app.load_state(next_monday)["dueTasks"] if item["id"] == task["id"]
         )
         self.assertFalse(monday_task["completed"])
 
-        app.toggle_task(task["id"], friday, False)
+        app.toggle_task(task["id"], wednesday, False)
         restored = next(
             item for item in app.load_state(friday)["dueTasks"] if item["id"] == task["id"]
         )
@@ -338,10 +336,10 @@ class TaskRecorderTest(unittest.TestCase):
             connection.execute("UPDATE tasks SET next_due = ? WHERE id = ?", (available_at, task["id"]))
 
         state = app.load_state(date.today().isoformat())
-        self.assertNotIn(task["id"], {item["id"] for item in state["dueTasks"]})
-        cooling = next(item for item in state["coolingTasks"] if item["id"] == task["id"])
+        cooling = next(item for item in state["dueTasks"] if item["id"] == task["id"])
         self.assertEqual(cooling["available_at"], available_at)
         self.assertGreater(cooling["cooldown_remaining_seconds"], 0)
+        self.assertFalse(cooling["completed"])
 
     def test_history_returns_completed_record(self):
         account = create_test_account({"name": "历史测试号", "dailyTask": "每日"})
