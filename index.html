@@ -54,16 +54,21 @@
       </div>
 
       <section class="view active" id="view-today">
-        <div class="summary-grid">
+        <div class="summary-grid" id="summaryGrid">
           <article class="summary-card primary"><span>总进度</span><strong id="progressText">0 / 0</strong><div class="progress"><i id="progressBar"></i></div></article>
           <article class="summary-card"><span>每日进度</span><strong id="dailyProgressText">0 / 0</strong><div class="progress secondary-progress"><i id="dailyProgressBar"></i></div></article>
           <article class="summary-card"><span>待完成</span><strong id="remainingCount">0</strong><small>件任务</small></article>
         </div>
 
+        <div class="future-banner hidden" id="futureBanner">
+          <span class="future-banner-label">预览</span>
+          <span>此日期尚未到来，以下任务届时将到期，<strong>无法进行任何操作</strong>。</span>
+        </div>
+
         <div class="section-toolbar">
           <div>
             <h2>应做任务</h2>
-            <p>每日任务和已到期的周期任务</p>
+            <p id="sectionSubtitle">每日任务和已到期的周期任务</p>
           </div>
           <button class="button primary" id="completeAll">全部标记完成</button>
         </div>
@@ -235,7 +240,7 @@
               <h3>完成与撤销</h3>
               <p>点击任务卡片即可标记完成（显示绿色打勾样式）。再次点击可撤销。质变仪和探索派遣在点击完成时会弹出时间确认对话框（见对应章节）。</p>
               <h3>任务排序规则</h3>
-              <p>每个号主的任务组内，<strong>未完成的任务排在左侧，已完成或冷却中的任务排在右侧</strong>，同状态内按固定优先级排列。</p>
+              <p>每个号主的任务组内，任务按<strong>未完成 → 已完成 → 冷却中</strong>的顺序从左到右排列。</p>
               <h3>切换日期与补记</h3>
               <p>顶部右上角的日期选择器可切换到历史日期进行查看或补记。点击 <span class="ui-ref">回到今天</span> 恢复当前游戏日。补记的完成时间以实际点击时刻为准，记录日期归入所选历史日期。</p>
               <h3>自动刷新</h3>
