@@ -527,15 +527,19 @@ function groupTasks(tasks) {
   }, new Map());
 }
 
-function taskGroupsHtml(tasks, emptyText) {
+function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   const groups = groupTasks(tasks);
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
-    const isInactive = (t) => t.completed || (t.cooldown_remaining_seconds || 0) > 0;
-    const chips = [...group.tasks].sort((a, b) => isInactive(a) - isInactive(b)).map((task) => {
+    const taskOrder = (t) => {
+      if ((t.name === "探索派遣" || t.name === "质变仪") && (t.cooldown_remaining_seconds || 0) > 0 && !t.completed) return 2;
+      if (t.completed) return 1;
+      return 0;
+    };
+    const chips = [...group.tasks].sort((a, b) => taskOrder(a) - taskOrder(b)).map((task) => {
       let dueText = "";
-      if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
+      if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta cooldown-remaining" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
       else if (task.name === "壶" && task.completed && task.next_due) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
       else if (task.recurrence === "interval" && task.next_due && task.name !== "质变仪" && task.name !== "探索派遣" && task.name !== "壶") dueText = `<small class="schedule-meta">到期 ${escapeHtml(task.next_due)}</small>`;
       if (task.recurrence === "weekly" && task.event_end && task.completed) dueText = `<small class="schedule-meta">下次刷新 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
@@ -550,20 +554,13 @@ function taskGroupsHtml(tasks, emptyText) {
           + (bosses.length ? `<small class="task-note task-note-boss">周本：${escapeHtml(bosses.join("、"))}</small>` : "");
       })();
       const expeditionCooling = (task.name === "探索派遣" || task.name === "质变仪") && (task.cooldown_remaining_seconds || 0) > 0 && !task.completed;
-      const chipClass = expeditionCooling ? "expedition-cooling" : (task.completed ? "completed" : "");
-      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
+      const chipClass = expeditionCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
+      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
     }).join("");
     return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${group.tasks.length} 完成</span></div><div class="task-list">${chips}</div></article>`;
   }).join("");
 }
 
-function coolingTasksHtml(tasks) {
-  const groups = groupTasks(tasks);
-  return [...groups.entries()].map(([accountId, group]) => {
-    const chips = group.tasks.map((task) => `<div class="task-chip cooldown-chip"><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span><small class="schedule-meta" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small></span></div>`).join("");
-    return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}</h3></div><div class="task-list">${chips}</div></article>`;
-  }).join("");
-}
 
 let _cooldownTimer = null;
 
@@ -592,7 +589,7 @@ function startCooldownTicker() {
 }
 
 function renderToday() {
-  const { summary, dueTasks, coolingTasks = [] } = state.data;
+  const { summary, dueTasks } = state.data;
   const dailyTaskNames = new Set(dailyTaskTagDefinitions.map((task) => task.name));
   const fallbackDailyTasks = dueTasks.filter((task) => dailyTaskNames.has(task.name));
   const dailyTotal = Number.isFinite(summary.dailyTotal) ? summary.dailyTotal : fallbackDailyTasks.length;
@@ -608,10 +605,10 @@ function renderToday() {
   document.querySelector("#dailyProgressBar").style.width = `${dailyPercent}%`;
   document.querySelector("#remainingCount").textContent = summary.remaining;
   document.querySelector("#navRemaining").textContent = summary.remaining;
+  const isFutureDate = state.selectedDate > localDateString(gameDate());
+  document.querySelector("#completeAll").classList.toggle("hidden", isFutureDate);
   document.querySelector("#completeAll").disabled = summary.remaining === 0;
-  document.querySelector("#dueTaskGroups").innerHTML = taskGroupsHtml(dueTasks, "这一天没有待办任务，轻松收工。");
-  document.querySelector("#cooldownSection").classList.toggle("hidden", coolingTasks.length === 0);
-  document.querySelector("#cooldownTaskGroups").innerHTML = coolingTasksHtml(coolingTasks);
+  document.querySelector("#dueTaskGroups").innerHTML = taskGroupsHtml(dueTasks, "这一天没有待办任务，轻松收工。", isFutureDate);
   renderScheduleSettings();
   startCooldownTicker();
 }
@@ -1254,6 +1251,7 @@ async function handleAction(target) {
   }
 
   const taskId = target.closest("[data-toggle-task]")?.dataset.toggleTask;
+  if (taskId && state.selectedDate > localDateString(gameDate())) return;
   if (taskId) {
     const button = target.closest("[data-toggle-task]");
     const completed = button.dataset.completed !== "true";
@@ -1357,15 +1355,45 @@ async function handleAction(target) {
   }
 }
 
+let _guideObserver = null;
+let _guideClicksAbort = null;
+
+function initGuideSpy() {
+  if (_guideObserver) { _guideObserver.disconnect(); _guideObserver = null; }
+  if (_guideClicksAbort) { _guideClicksAbort.abort(); }
+  _guideClicksAbort = new AbortController();
+  const { signal } = _guideClicksAbort;
+
+  const sections = Array.from(document.querySelectorAll("#view-guide .guide-section"));
+  const targets = Array.from(document.querySelectorAll("#view-guide .guide-section, #guide-tasks h3[id]"));
+  const tocLinks = document.querySelectorAll(".guide-toc a");
+  const activate = (id) => tocLinks.forEach((a) => a.classList.toggle("toc-active", id != null && a.getAttribute("href") === `#${id}`));
+  const visible = new Set();
+  _guideObserver = new IntersectionObserver((entries) => {
+    entries.forEach((e) => (e.isIntersecting ? visible.add(e.target.id) : visible.delete(e.target.id)));
+    const first = targets.find((t) => visible.has(t.id));
+    activate(first ? first.id : null);
+  }, { rootMargin: "0px 0px -60% 0px", threshold: 0 });
+  targets.forEach((t) => _guideObserver.observe(t));
+  tocLinks.forEach((a) => {
+    a.addEventListener("click", (e) => {
+      const targetId = a.getAttribute("href").slice(1);
+      const target = document.getElementById(targetId);
+      if (target) { e.preventDefault(); activate(targetId); target.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    }, { signal });
+  });
+}
+
 function switchView(view) {
   state.currentView = view;
   document.querySelectorAll(".nav-item").forEach((item) => item.classList.toggle("active", item.dataset.view === view));
   document.querySelectorAll(".view").forEach((item) => item.classList.toggle("active", item.id === `view-${view}`));
-  const titles = { today: ["任务总览", "今日任务"], accounts: ["配置中心", "号主与任务"], activities: ["活动管理", "活动任务"], story: ["剧情记录", "剧情任务"], history: ["记录查询", "历史记录"], settings: ["本地数据", "设置与备份"] };
+  const titles = { today: ["任务总览", "今日任务"], accounts: ["配置中心", "号主与任务"], activities: ["活动管理", "活动任务"], story: ["剧情记录", "剧情任务"], history: ["记录查询", "历史记录"], guide: ["帮助文档", "使用说明"], settings: ["本地数据", "设置与备份"] };
   document.querySelector("#eyebrow").textContent = titles[view][0];
   document.querySelector("#pageTitle").textContent = titles[view][1];
   document.querySelector("#todayControls").classList.toggle("hidden", view !== "today");
   if (view === "history") loadHistory();
+  if (view === "guide") initGuideSpy();
 }
 
 async function loadHistory() {
@@ -1566,7 +1594,7 @@ function bindEvents() {
   document.querySelector("#selectedDate").addEventListener("change", async (event) => { state.selectedDate = event.target.value; await loadState(); });
   document.querySelector("#goToday").addEventListener("click", async () => { state.selectedDate = localDateString(gameDate()); await loadState(); });
   document.querySelector("#completeAll").addEventListener("click", async () => {
-    const taskIds = state.data.dueTasks.filter((task) => !task.completed).map((task) => task.id);
+    const taskIds = state.data.dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).map((task) => task.id);
     if (!taskIds.length) return;
     await api("/api/tasks/complete-all", { method: "POST", body: JSON.stringify({ date: state.selectedDate, taskIds }) });
     await loadState();
@@ -1742,7 +1770,7 @@ async function sendHeartbeat() {
 
 function startHeartbeat() {
   sendHeartbeat();
-  window.setInterval(sendHeartbeat, 15000);
+  window.setInterval(sendHeartbeat, 5000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) sendHeartbeat(); });
 }
 

@@ -62,8 +62,8 @@ NOTE_TAGS = ("好感队", "委托")
 DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"))
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
-HEARTBEAT_TIMEOUT = 90
-APP_VERSION = "2.0.0"
+HEARTBEAT_TIMEOUT = 10
+APP_VERSION = "2.1.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -914,6 +914,17 @@ def load_state(selected_date: str) -> dict:
                 (selected_week_key,),
             )
         }
+        completed_monthly_task_ids = {
+            row[0]
+            for row in connection.execute(
+                """
+                SELECT DISTINCT r.task_id FROM task_records r
+                JOIN tasks t ON t.id = r.task_id
+                WHERE t.recurrence = 'monthly' AND t.active = 1
+                  AND r.task_date >= t.next_due
+                """
+            )
+        }
     due_tasks = []
     cooling_tasks = []
     all_tasks = []
@@ -921,16 +932,18 @@ def load_state(selected_date: str) -> dict:
         task["completed"] = bool(task["completed"])
         task["completed_ever"] = bool(task["completed_ever"])
         recurrence = task["recurrence"]
-        if recurrence == "weekly":
-            task["completed"] = task["id"] in completed_weekly_task_dates
         all_tasks.append(task)
         if recurrence == "daily":
             due_tasks.append(task)
         elif recurrence == "weekly":
+            week_done = task["id"] in completed_weekly_task_dates
+            completed_on_selected = completed_weekly_task_dates.get(task["id"]) == selected_date
+            task["completed"] = completed_on_selected
             next_refresh = weekly_cycle_start(selected_day) + timedelta(days=7)
             task["event_end"] = next_refresh.isoformat()
             task["event_end_time"] = "04:00"
-            due_tasks.append(task)
+            if not week_done or completed_on_selected:
+                due_tasks.append(task)
         elif recurrence == "interval":
             precise_due = exact_due_moment(task["next_due"]) if task["name"] in ("质变仪", "探索派遣") else None
             is_due = bool(
@@ -946,13 +959,12 @@ def load_state(selected_date: str) -> dict:
                 task["cooldown_remaining_seconds"] = max(
                     0, int((precise_due - datetime.now()).total_seconds())
                 )
-            if task["completed"] or is_due:
+            still_cooling = precise_due is not None and precise_due > datetime.now()
+            if task["completed"] or is_due or still_cooling:
                 due_tasks.append(task)
-            elif precise_due and selected_day == game_today():
-                cooling_tasks.append(task)
         elif recurrence == "monthly" and (
             task["completed"] or (task["next_due"] and task["next_due"] <= selected_date)
-        ):
+        ) and (task["id"] not in completed_monthly_task_ids or task["completed"]):
             selected = date.fromisoformat(selected_date)
             monthly_day = task["monthly_day"]
             if selected.day < monthly_day:
@@ -974,8 +986,13 @@ def load_state(selected_date: str) -> dict:
         ):
             due_tasks.append(task)
 
-    completed_count = sum(1 for task in due_tasks if task["completed"])
-    daily_tasks = [task for task in due_tasks if task["name"] in DAILY_CATEGORY_TASKS]
+    _next_day = game_today() + timedelta(days=1)
+    end_of_game_today = datetime(_next_day.year, _next_day.month, _next_day.day, 4, 0)
+    def _long_cooling(task):
+        return task.get("available_at") and datetime.fromisoformat(task["available_at"]) > end_of_game_today
+    countable_tasks = [task for task in due_tasks if not _long_cooling(task)]
+    completed_count = sum(1 for task in countable_tasks if task["completed"])
+    daily_tasks = [task for task in countable_tasks if task["name"] in DAILY_CATEGORY_TASKS]
     daily_completed_count = sum(1 for task in daily_tasks if task["completed"])
     return {
         "date": selected_date,
@@ -988,9 +1005,9 @@ def load_state(selected_date: str) -> dict:
         "storyTasks": list_story_tasks(),
         "settings": settings,
         "summary": {
-            "total": len(due_tasks),
+            "total": len(countable_tasks),
             "completed": completed_count,
-            "remaining": len(due_tasks) - completed_count,
+            "remaining": len(countable_tasks) - completed_count,
             "dailyTotal": len(daily_tasks),
             "dailyCompleted": daily_completed_count,
         },

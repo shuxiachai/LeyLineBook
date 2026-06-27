@@ -354,9 +354,7 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .task-chip .task-note { display: block; margin-top: 2px; color: var(--green); font-size: 11px; }
 .task-chip .task-note-boss { color: var(--gold); }
 .task-chip .task-note-expedition { color: var(--muted); }
-.task-chip.expedition-cooling { opacity: 0.6; cursor: default; pointer-events: none; }
 .compact .task-group { padding: 13px 16px; }
-.cooldown-toolbar { margin-top: 28px; }
 .cooldown-chip { cursor: default; }
 .cooldown-chip::before { content: "时"; display: grid; place-items: center; border: 0; background: var(--warning-bg); color: var(--warning-text); font-size: 10px; font-weight: 800; }
 .cooldown-chip:hover { border-color: var(--chip-border); }
@@ -566,3 +564,33 @@ dialog label { display: grid; gap: 6px; margin-bottom: 14px; color: var(--muted)
   .account-row .card-actions { order: -1; margin-left: auto; }
   .account-sections { flex-basis: 100%; }
 }
+
+/* ── 使用说明 ── */
+.sidebar-bottom { margin-top: auto; border-top: 1px solid var(--line); padding-top: 6px; }
+.guide-layout { display: grid; grid-template-columns: 220px 1fr; gap: 32px; align-items: start; }
+.guide-toc { position: sticky; top: 0; padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); }
+.guide-toc h3 { margin: 0 0 12px; font-size: 11px; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: .12em; }
+.guide-toc > ol { margin: 0; padding: 0; list-style: none; }
+.guide-toc > ol > li { margin-bottom: 2px; }
+.guide-toc > ol > li > a { display: block; padding: 6px 10px; border-radius: 7px; color: var(--ink); font-size: 13px; font-weight: 600; text-decoration: none; transition: background .12s, color .12s; }
+.guide-toc > ol > li > a:hover { background: var(--surface-soft); color: var(--green); }
+.guide-toc > ol > li > a.toc-active { background: var(--green-soft); color: var(--green); }
+.guide-toc ol ol { margin: 3px 0 6px; padding: 0 0 0 12px; list-style: none; border-left: 2px solid var(--line); }
+.guide-toc ol ol li { margin-bottom: 2px; }
+.guide-toc ol ol li a { display: block; padding: 3px 8px; color: var(--muted); font-size: 12px; text-decoration: none; border-radius: 5px; transition: color .12s; }
+.guide-toc ol ol li a:hover { color: var(--green); }
+.guide-toc ol ol li a.toc-active { color: var(--green); font-weight: 700; }
+.guide-section { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 30px 34px; margin-bottom: 20px; scroll-margin-top: 24px; box-shadow: var(--shadow); }
+.guide-section h2 { margin: 0 0 22px; font-size: 26px; font-weight: 800; color: var(--ink); padding-left: 16px; position: relative; }
+.guide-section h2::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 4px; border-radius: 2px; background: var(--green); }
+.guide-section h3 { margin: 26px 0 8px; font-size: 15px; font-weight: 800; color: var(--green-dark); scroll-margin-top: 24px; }
+.guide-section h3:first-of-type { margin-top: 0; }
+.guide-section p { color: var(--muted); line-height: 1.75; margin-bottom: 10px; font-size: 14px; }
+.guide-section ul, .guide-section ol { color: var(--muted); line-height: 1.75; padding-left: 22px; margin-bottom: 10px; font-size: 14px; }
+.guide-section li { margin-bottom: 6px; }
+.guide-section strong { color: var(--ink); font-weight: 700; }
+.guide-tip { background: var(--green-soft); border-left: 3px solid var(--green); padding: 13px 17px; border-radius: 0 10px 10px 0; margin: 16px 0; }
+.guide-tip p { color: var(--green-dark); margin: 0; font-size: 13px; line-height: 1.7; }
+.guide-warn { background: var(--warning-bg); border-left: 3px solid var(--gold); padding: 13px 17px; border-radius: 0 10px 10px 0; margin: 16px 0; }
+.guide-warn p { color: var(--warning-text); margin: 0; font-size: 13px; line-height: 1.7; }
+.ui-ref { display: inline-block; padding: 1px 6px; border-radius: 5px; background: var(--surface-muted); border: 1px solid var(--line); font-size: 12.5px; font-weight: 700; color: var(--ink); white-space: nowrap; vertical-align: middle; line-height: 1.65; }
