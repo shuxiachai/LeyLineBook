@@ -25,9 +25,12 @@
         <button class="nav-item" data-view="accounts"><span>号主与任务</span></button>
         <button class="nav-item" data-view="activities"><span>限时活动</span></button>
         <button class="nav-item" data-view="history"><span>历史记录</span></button>
-        <button class="nav-item" data-view="settings"><span>设置与备份</span></button>
+        <button class="nav-item" data-view="guide"><span>使用说明</span></button>
       </nav>
-      <div class="local-note">所有数据仅保存在本地，不会上传或同步</div>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-view="settings"><span>设置与备份</span></button>
+        <div class="local-note">所有数据仅保存在本地，不会上传或同步</div>
+      </div>
     </aside>
 
     <main>
@@ -65,16 +68,6 @@
           <button class="button primary" id="completeAll">全部标记完成</button>
         </div>
         <div id="dueTaskGroups" class="task-groups"></div>
-
-        <div id="cooldownSection" class="hidden">
-          <div class="section-toolbar secondary-toolbar cooldown-toolbar">
-            <div>
-              <h2>冷却中</h2>
-              <p>质变仪满 168 小时后会自动进入应做任务</p>
-            </div>
-          </div>
-          <div id="cooldownTaskGroups" class="task-groups compact"></div>
-        </div>
 
       </section>
 
@@ -148,6 +141,227 @@
             <thead><tr><th>记录日期</th><th>号主</th><th>任务</th><th>完成时间</th></tr></thead>
             <tbody id="historyRows"></tbody>
           </table>
+        </div>
+      </section>
+
+      <section class="view" id="view-guide">
+        <div class="guide-layout">
+          <aside class="guide-toc">
+            <h3>目录</h3>
+            <ol>
+              <li><a href="#guide-start">快速开始</a></li>
+              <li><a href="#guide-accounts">号主与任务</a></li>
+              <li><a href="#guide-today">今日任务</a></li>
+              <li>
+                <a href="#guide-tasks">任务类型详解</a>
+                <ol>
+                  <li><a href="#guide-task-daily">体力 / 狗粮</a></li>
+                  <li><a href="#guide-task-aike">爱可菲料理</a></li>
+                  <li><a href="#guide-task-transformer">质变仪</a></li>
+                  <li><a href="#guide-task-pot">壶</a></li>
+                  <li><a href="#guide-task-expedition">探索派遣</a></li>
+                  <li><a href="#guide-task-abyss">深境螺旋</a></li>
+                  <li><a href="#guide-task-theater">幻想真境剧诗</a></li>
+                  <li><a href="#guide-task-war">危战</a></li>
+                </ol>
+              </li>
+              <li><a href="#guide-activities">限时活动</a></li>
+              <li><a href="#guide-story">剧情任务</a></li>
+              <li><a href="#guide-history">历史记录</a></li>
+              <li><a href="#guide-settings">设置与备份</a></li>
+            </ol>
+          </aside>
+          <div class="guide-content">
+
+            <section class="guide-section" id="guide-start">
+              <h2>快速开始</h2>
+              <p>地脉簿是一款本地运行的原神多账号任务追踪工具。双击 EXE 后程序在后台启动，自动在浏览器中打开界面。所有数据仅保存在本机，不上传至任何服务器。</p>
+              <h3>基本使用流程</h3>
+              <ol>
+                <li>在「<strong>号主与任务</strong>」页新增号主（每个游戏账号对应一个号主）</li>
+                <li>点击号主卡片中的任务按钮，开启需要追踪的任务</li>
+                <li>每天在「<strong>今日任务</strong>」页查看待办并逐一点击完成</li>
+              </ol>
+              <div class="guide-tip"><p>程序关闭后任务记录仍会保留。下次打开时，已完成的每日任务会自动在次日 <span class="ui-ref">04:00</span> 重置。</p></div>
+            </section>
+
+            <section class="guide-section" id="guide-accounts">
+              <h2>号主与任务</h2>
+              <p>「号主」对应一个游戏账号，所有任务都归属于某个号主，在今日任务页按号主分组显示。</p>
+              <h3>新增号主</h3>
+              <p>点击页面右上角 <span class="ui-ref">新增号主</span>，填写以下信息：</p>
+              <ul>
+                <li><strong>名称</strong>：在任务列表中显示的标识，建议填写账号昵称或编号</li>
+                <li><strong>联系人/分组</strong>（可选）：填写账号持有人或分组名称，便于多号管理</li>
+                <li><strong>截止日期</strong>（必填）：代打服务的到期日期。若非代打可填写一个远期日期，临近到期时号主名称旁会出现提醒标记</li>
+                <li><strong>备注</strong>（可选）：自由填写的额外说明</li>
+                <li><strong>账号凭据</strong>（可选）：可在新增时一并填写账号密码，也可后续通过 <span class="ui-ref">密</span> 按钮添加</li>
+              </ul>
+              <h3>任务配置</h3>
+              <p>每个号主卡片分三个区域：</p>
+              <ul>
+                <li><strong>每日</strong>：体力、狗粮、质变仪、壶、爱可菲料理、探索派遣</li>
+                <li><strong>活动</strong>：在「限时活动」页添加的活动任务（可按号主单独开关）</li>
+                <li><strong>深渊</strong>：深境螺旋、幻想真境剧诗、危战</li>
+              </ul>
+              <p>按钮显示 <span class="ui-ref">✓</span> 时表示已为该号主启用，点击可切换。部分任务点击后会弹出备注设置对话框：</p>
+              <ul>
+                <li><strong>探索派遣</strong>：选择冷却时长（<span class="ui-ref">20小时</span> 或 <span class="ui-ref">15小时</span>），按号主角色阵容决定</li>
+                <li><strong>深境螺旋 / 幻想真境剧诗</strong>：可记录挑战层数（可选，不影响追踪逻辑）</li>
+              </ul>
+              <h3>安全凭据存储</h3>
+              <p>每个号主卡片右上角有 <span class="ui-ref">密</span> 按钮，可安全存储游戏账号和密码。采用 Windows DPAPI 加密，只有本机才能解密，账号密码不会出现在备份导出文件中。</p>
+              <div class="guide-tip"><p>请勿将密码写在备注字段中。迁移到新设备后，需重新填写凭据。</p></div>
+              <h3>调整排序</h3>
+              <p>长按并拖动号主卡片右侧的 <span class="ui-ref">↕</span> 图标，可调整号主在今日任务页的显示顺序。</p>
+              <h3>停用与删除</h3>
+              <ul>
+                <li><span class="ui-ref">✕</span> <strong>停用</strong>：号主及其任务从列表隐藏，历史记录保留，可随时通过 <span class="ui-ref">↺</span> 重新启用</li>
+                <li><span class="ui-ref">␡</span> <strong>彻底删除</strong>：号主从界面中永久移除，任务不再显示；历史完成记录仍保留在数据库中，可在「历史记录」页继续查询</li>
+              </ul>
+              <div class="guide-warn"><p>彻底删除操作不可撤销，执行前请先确认数据已备份或不再需要。</p></div>
+            </section>
+
+            <section class="guide-section" id="guide-today">
+              <h2>今日任务</h2>
+              <h3>游戏日与重置时间</h3>
+              <p>原神以每天凌晨 <span class="ui-ref">04:00</span> 为一天的分界点。软件与游戏保持一致——当前时间在 00:00–03:59 时，显示的仍是前一天任务周期内的内容，完成记录也会归入前一天。</p>
+              <h3>顶部汇总卡片</h3>
+              <ul>
+                <li><strong>总进度</strong>：所有今日到期任务中已完成的数量及进度条</li>
+                <li><strong>每日进度</strong>：体力/狗粮/质变仪/壶/爱可菲料理/探索派遣 的专项进度</li>
+                <li><strong>待完成</strong>：当前还未完成的任务数量</li>
+              </ul>
+              <h3>完成与撤销</h3>
+              <p>点击任务卡片即可标记完成（显示绿色打勾样式）。再次点击可撤销。质变仪和探索派遣在点击完成时会弹出时间确认对话框（见对应章节）。</p>
+              <h3>任务排序规则</h3>
+              <p>每个号主的任务组内，<strong>未完成的任务排在左侧，已完成或冷却中的任务排在右侧</strong>，同状态内按固定优先级排列。</p>
+              <h3>切换日期与补记</h3>
+              <p>顶部右上角的日期选择器可切换到历史日期进行查看或补记。点击 <span class="ui-ref">回到今天</span> 恢复当前游戏日。补记的完成时间以实际点击时刻为准，记录日期归入所选历史日期。</p>
+              <h3>自动刷新</h3>
+              <p>今日任务页每分钟自动刷新一次。质变仪/探索派遣的冷却倒计时归零时，会立即触发刷新，恢复可点击状态，无需手动操作。</p>
+            </section>
+
+            <section class="guide-section" id="guide-tasks">
+              <h2>任务类型详解</h2>
+
+              <h3 id="guide-task-daily">体力 / 狗粮（每日）</h3>
+              <p>每天 <span class="ui-ref">04:00</span> 自动重置，每天都会出现在任务列表中。点击标记完成即可，没有额外配置。</p>
+
+              <h3 id="guide-task-aike">爱可菲料理（每周）</h3>
+              <p>每周一 <span class="ui-ref">04:00</span> 刷新，本周内完成一次即可。</p>
+              <ul>
+                <li>完成当天仍显示为已完成状态（可撤销）</li>
+                <li>次日起至下周一 <span class="ui-ref">04:00</span> 前，该任务不再出现</li>
+                <li>完成后卡片下方显示下次刷新日期</li>
+              </ul>
+
+              <h3 id="guide-task-transformer">质变仪（固定间隔 7 天）</h3>
+              <p>质变仪需要记录实际使用时间，以便精确计算 7 天冷却的结束时刻。</p>
+              <ul>
+                <li>点击卡片后弹出 <span class="ui-ref">使用时间</span> 确认框，默认为当前时刻，可手动修改</li>
+                <li>确认后进入 7 天冷却期，卡片变为灰色禁用状态，显示实时倒计时</li>
+                <li>冷却期内不可点击，冷却结束后页面自动刷新并恢复可点击</li>
+              </ul>
+              <div class="guide-tip"><p>若忘记记录使用时间，可在弹出框中手动输入实际使用的时间点，软件从该时间起算 7 天冷却。</p></div>
+
+              <h3 id="guide-task-pot">壶（固定间隔 3 天）</h3>
+              <p>尘歌壶每 3 个游戏日可进入一次收取奖励。</p>
+              <ul>
+                <li>点击标记完成，3 个游戏日后重新出现</li>
+                <li>完成后显示下次可收取日期</li>
+              </ul>
+
+              <h3 id="guide-task-expedition">探索派遣（固定间隔 15 或 20 小时）</h3>
+              <p>探索派遣的冷却时间由号主角色阵容决定，分为 <span class="ui-ref">15小时</span> 和 <span class="ui-ref">20小时</span> 两种，需要为每个号主单独配置。</p>
+              <ul>
+                <li><strong>配置时长</strong>：在「号主与任务」页点击对应号主的探索派遣按钮，在备注设置中选择 <span class="ui-ref">20小时</span> 或 <span class="ui-ref">15小时</span>（默认 20小时）</li>
+                <li>点击完成时弹出 <span class="ui-ref">派遣时间</span> 确认框，默认当前时刻，可手动修改</li>
+                <li>确认后进入冷却，卡片变灰显示倒计时，不可点击</li>
+                <li>冷却结束后自动恢复，始终显示在今日任务列表中（不会移入其他区域）</li>
+              </ul>
+
+              <h3 id="guide-task-abyss">深境螺旋（每月 16 日刷新）</h3>
+              <p>每月 16 日 <span class="ui-ref">04:00</span> 出现，下月 16 日 <span class="ui-ref">04:00</span> 前有效。</p>
+              <ul>
+                <li>显示本期截止时间（截止日期 <span class="ui-ref">03:59</span>）</li>
+                <li>完成后当月不再出现，下月 16 日重新刷新</li>
+              </ul>
+
+              <h3 id="guide-task-theater">幻想真境剧诗（每月 1 日刷新）</h3>
+              <p>每月 1 日 <span class="ui-ref">04:00</span> 出现，下月 1 日 <span class="ui-ref">04:00</span> 前有效，逻辑与深境螺旋相同。</p>
+
+              <h3 id="guide-task-war">危战（版本周期）</h3>
+              <p>危战随每个 42 天大版本开放，版本期间出现在任务列表中。</p>
+              <ul>
+                <li>需要在「设置与备份」中设置 <span class="ui-ref">版本日期锚点</span>——填入任意一个已知大版本开始的星期三日期，软件以此为基准每 42 天自动推算后续版本时间窗口</li>
+                <li>锚点只需设置一次，后续版本自动滚动</li>
+                <li>版本结束后自动隐藏，下个版本开始时重新出现</li>
+              </ul>
+            </section>
+
+            <section class="guide-section" id="guide-activities">
+              <h2>限时活动</h2>
+              <p>用于追踪版本内的大活动和小活动任务，可按号主单独开关。</p>
+              <h3>添加活动</h3>
+              <p>在「限时活动」页点击 <span class="ui-ref">新增活动</span>，填写活动名称、分类（大活动/小活动）、开始日期及持续天数，系统会自动计算截止时间并在活动列表中显示。</p>
+              <h3>为号主启用活动</h3>
+              <p>活动添加后，在「号主与任务」页各号主卡片的「活动」区域会出现对应按钮，点击即可为该号主开启或关闭此任务。不同号主可独立开关同一个活动。</p>
+              <h3>活动到期</h3>
+              <p>活动截止日期过后，该任务不再出现在今日任务页，但活动条目仍保留在「限时活动」页中供查阅。</p>
+            </section>
+
+            <section class="guide-section" id="guide-story">
+              <h2>剧情任务</h2>
+              <p>用于追踪魔神任务、传说任务和世界任务的通关情况，支持版本限定奖励截止提醒。</p>
+              <h3>任务类型</h3>
+              <ul>
+                <li><strong>魔神任务</strong>：主线剧情，有版本专属奖励，截止日期为当前大版本结束</li>
+                <li><strong>传说任务</strong>：角色专属剧情，每半个大版本更新一次奖励窗口</li>
+                <li><strong>世界任务</strong>：无时限奖励，不显示截止日期</li>
+              </ul>
+              <h3>添加剧情任务</h3>
+              <p>填写任务名称、选择类型和所属号主（从已有号主选择，或填写临时号主名称）。勾选 <span class="ui-ref">有版本限定奖励</span> 后，系统根据版本周期自动计算奖励截止时间。</p>
+              <h3>任务排序</h3>
+              <p>未完成任务优先显示，其中有截止时间的按截止日期从近到远排列；完成的任务排在最后，但仍保留在列表中可供查阅。</p>
+            </section>
+
+            <section class="guide-section" id="guide-history">
+              <h2>历史记录</h2>
+              <p>查询指定时间段内的任务完成记录，可按号主筛选。</p>
+              <h3>查询方式</h3>
+              <ul>
+                <li>点击 <span class="ui-ref">最近一个月</span> 或 <span class="ui-ref">最近半年</span> 快捷按钮自动填入日期范围</li>
+                <li>或手动选择开始和结束日期，然后点击 <span class="ui-ref">查询</span></li>
+                <li>右侧下拉菜单可按号主筛选结果</li>
+              </ul>
+              <h3>补记说明</h3>
+              <p>在今日任务页切换到历史日期后进行打卡，记录会归入所选历史日期。完成时间戳以实际点击时刻为准。</p>
+            </section>
+
+            <section class="guide-section" id="guide-settings">
+              <h2>设置与备份</h2>
+              <h3>界面主色调</h3>
+              <p>提供 7 种颜色方案（黑、白、绿、蓝、紫、玫瑰、琥珀），选择后立即生效，下次打开保持当前选择。</p>
+              <h3>角色背景</h3>
+              <p>可上传 PNG、JPEG 或 WebP 格式图片（最大 12 MB）作为界面背景，并调整强度、比例和水平位置。选择黑、白或绿色主题可恢复纯色界面。</p>
+              <h3>危战版本周期</h3>
+              <p>填入任意一个已知原神大版本开始的星期三日期作为 <span class="ui-ref">版本日期锚点</span>，软件以此为基准每 42 天计算一次，自动推算危战的开放时间窗口。锚点只需设置一次。</p>
+              <h3>导出备份</h3>
+              <p>将所有号主、任务配置、活动和完成历史导出为 JSON 文件。<strong>不包含账号密码</strong>（DPAPI 加密绑定本机，无法随文件迁移）。</p>
+              <h3>导入备份</h3>
+              <p>从 JSON 备份文件还原数据。账号密码需在导入后重新填写。</p>
+              <div class="guide-warn"><p>导入后当前所有数据将被完全替换，无法撤销。建议在导入前先导出一份当前备份。</p></div>
+              <h3>版本与更新</h3>
+              <p>程序启动时静默检查 GitHub Releases 是否有新版本，发现更新后在顶部显示横幅提示。可在此处手动检查。确认更新后自动下载并重启，无需手动操作。</p>
+              <h3>清空数据库</h3>
+              <p>删除全部号主、任务和历史记录，恢复初始状态。</p>
+              <div class="guide-warn"><p>此操作不可撤销，执行后无法恢复任何数据。请务必先在「导出备份」处保存一份备份文件。</p></div>
+              <h3>关闭程序</h3>
+              <p>停止后台服务。已保存的数据不会丢失，下次双击 EXE 即可重新启动。</p>
+            </section>
+
+          </div>
         </div>
       </section>
 
