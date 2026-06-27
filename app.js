@@ -607,7 +607,8 @@ function renderToday() {
   document.querySelector("#navRemaining").textContent = summary.remaining;
   const isFutureDate = state.selectedDate > localDateString(gameDate());
   document.querySelector("#completeAll").classList.toggle("hidden", isFutureDate);
-  document.querySelector("#completeAll").disabled = summary.remaining === 0;
+  const actionable = dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).length;
+  document.querySelector("#completeAll").disabled = actionable === 0;
   document.querySelector("#dueTaskGroups").innerHTML = taskGroupsHtml(dueTasks, "这一天没有待办任务，轻松收工。", isFutureDate);
   renderScheduleSettings();
   startCooldownTicker();
