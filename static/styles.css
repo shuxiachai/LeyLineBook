@@ -270,6 +270,9 @@ nav { display: grid; gap: 7px; }
 .nav-item b { min-width: 24px; padding: 2px 7px; border-radius: 99px; background: #f0d7a5; color: #27493e; text-align: center; font-size: 12px; }
 .local-note { margin-top: auto; color: var(--sidebar-muted); font-size: 12px; padding: 15px 10px 0; border-top: 1px solid var(--line); }
 
+.future-banner:not(.hidden) { display: flex; align-items: center; gap: 14px; padding: 12px 18px; margin-bottom: 24px; background: color-mix(in srgb, var(--muted) 8%, var(--panel)); border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent); border-radius: 10px; font-size: .875rem; color: var(--ink); }
+.future-banner-label { flex-shrink: 0; padding: 3px 9px; border-radius: 6px; background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.future-banner strong { font-weight: 600; }
 .update-banner:not([hidden]) { display: flex; align-items: center; gap: 14px; padding: 11px 20px; margin-bottom: 24px; background: color-mix(in srgb, var(--green) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--green) 22%, transparent); border-radius: 10px; font-size: .875rem; color: var(--ink); }
 .update-banner strong { color: var(--green); font-weight: 600; }
 .update-banner-actions { display: flex; gap: 8px; margin-left: auto; flex-shrink: 0; }

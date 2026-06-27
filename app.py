@@ -63,7 +63,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 10
-APP_VERSION = "2.1.1"
+APP_VERSION = "2.1.2"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -989,7 +989,7 @@ def load_state(selected_date: str) -> dict:
     _next_day = game_today() + timedelta(days=1)
     end_of_game_today = datetime(_next_day.year, _next_day.month, _next_day.day, 4, 0)
     def _long_cooling(task):
-        return task.get("available_at") and datetime.fromisoformat(task["available_at"]) > end_of_game_today
+        return not task["completed"] and task.get("available_at") and datetime.fromisoformat(task["available_at"]) > end_of_game_today
     countable_tasks = [task for task in due_tasks if not _long_cooling(task)]
     completed_count = sum(1 for task in countable_tasks if task["completed"])
     daily_tasks = [task for task in countable_tasks if task["name"] in DAILY_CATEGORY_TASKS]
