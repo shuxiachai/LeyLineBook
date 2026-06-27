@@ -530,8 +530,12 @@ function groupTasks(tasks) {
 function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   const groups = groupTasks(tasks);
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+  const _todayParts = localDateString(gameDate()).split("-").map(Number);
+  const _endOfGameToday = new Date(_todayParts[0], _todayParts[1] - 1, _todayParts[2] + 1, 4, 0, 0);
+  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) > _endOfGameToday;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
+    const countable = group.tasks.filter((task) => !isLongCooling(task)).length;
     const taskOrder = (t) => {
       if ((t.name === "探索派遣" || t.name === "质变仪") && (t.cooldown_remaining_seconds || 0) > 0 && !t.completed) return 2;
       if (t.completed) return 1;
@@ -557,7 +561,7 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
       const chipClass = expeditionCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
       return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
     }).join("");
-    return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${group.tasks.length} 完成</span></div><div class="task-list">${chips}</div></article>`;
+    return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${countable} 完成</span></div><div class="task-list">${chips}</div></article>`;
   }).join("");
 }
 
@@ -581,8 +585,15 @@ function startCooldownTicker() {
     if (!anyRemaining) {
       clearInterval(_cooldownTimer);
       _cooldownTimer = null;
-      if (state.currentView === "today" && state.selectedDate === localDateString(gameDate())) {
-        loadState().catch(() => {});
+      if (state.currentView === "today") {
+        const todayStr = localDateString(gameDate());
+        if (state.selectedDate < todayStr) {
+          state.selectedDate = todayStr;
+          document.querySelector("#selectedDate").value = todayStr;
+        }
+        if (state.selectedDate === todayStr) {
+          loadState().catch(() => {});
+        }
       }
     }
   }, 1000);
@@ -606,6 +617,9 @@ function renderToday() {
   document.querySelector("#remainingCount").textContent = summary.remaining;
   document.querySelector("#navRemaining").textContent = summary.remaining;
   const isFutureDate = state.selectedDate > localDateString(gameDate());
+  document.querySelector("#summaryGrid").classList.toggle("hidden", isFutureDate);
+  document.querySelector("#futureBanner").classList.toggle("hidden", !isFutureDate);
+  document.querySelector("#sectionSubtitle").textContent = isFutureDate ? "以下任务届时将到期，仅供参考" : "每日任务和已到期的周期任务";
   document.querySelector("#completeAll").classList.toggle("hidden", isFutureDate);
   const actionable = dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).length;
   document.querySelector("#completeAll").disabled = actionable === 0;
@@ -1785,7 +1799,13 @@ async function initialize() {
   await initializeCharacterBackground();
   await loadState();
   window.setInterval(() => {
-    if (state.currentView === "today" && state.selectedDate === localDateString(gameDate()) && !document.querySelector("dialog[open]")) {
+    if (state.currentView !== "today") return;
+    const todayStr = localDateString(gameDate());
+    if (state.selectedDate < todayStr) {
+      state.selectedDate = todayStr;
+      document.querySelector("#selectedDate").value = todayStr;
+    }
+    if (state.selectedDate === todayStr && !document.querySelector("dialog[open]")) {
       loadState().catch((error) => showToast(error.message));
     }
   }, 60000);
