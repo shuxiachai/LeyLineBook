@@ -38,7 +38,7 @@ const abyssTaskTagDefinitions = [
   { name: "幻想真境剧诗", label: "剧诗" },
   { name: "危战", label: "危战" },
 ];
-const noteTagDefinitions = ["好感队", "委托"];
+const noteTagDefinitions = ["好感队", "委托", "木偶食材"];
 const noNotesTaskNames = new Set(["爱可菲料理", "狗粮", "深境螺旋", "幻想真境剧诗", "危战"]);
 const WEEKLY_BOSS_PREFIX = "周本:";
 const EXPEDITION_PREFIX = "派遣:";
@@ -615,8 +615,10 @@ function renderToday() {
   document.querySelector("#dailyProgressText").textContent = `${dailyCompleted} / ${dailyTotal}`;
   document.querySelector("#dailyProgressBar").style.width = `${dailyPercent}%`;
   document.querySelector("#remainingCount").textContent = summary.remaining;
-  document.querySelector("#navRemaining").textContent = summary.remaining;
   const isFutureDate = state.selectedDate > localDateString(gameDate());
+  const _navD = new Date(state.selectedDate + "T00:00:00");
+  document.querySelector("#navTodayLabel").textContent = (state.selectedDate === localDateString(gameDate())) ? "今日任务" : `${_navD.getMonth() + 1}月${_navD.getDate()}日`;
+  document.querySelector("#navRemaining").textContent = isFutureDate ? "" : summary.remaining;
   document.querySelector("#summaryGrid").classList.toggle("hidden", isFutureDate);
   document.querySelector("#futureBanner").classList.toggle("hidden", !isFutureDate);
   document.querySelector("#sectionSubtitle").textContent = isFutureDate ? "以下任务届时将到期，仅供参考" : "每日任务和已到期的周期任务";

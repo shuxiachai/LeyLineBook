@@ -63,7 +63,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 10
-APP_VERSION = "2.1.2"
+APP_VERSION = "2.1.3"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -112,6 +112,8 @@ def check_for_update() -> dict:
     with urllib.request.urlopen(req, timeout=8) as resp:
         data = json.loads(resp.read().decode())
     latest_tag = data.get("tag_name", "").lstrip("v")
+    if latest_tag and not re.fullmatch(r"[\d.]+", latest_tag):
+        raise ValueError(f"非法版本号格式: {latest_tag!r}")
     assets = data.get("assets", [])
     download_url = _release_asset_download_url(assets, latest_tag)
     has_update = bool(latest_tag) and _parse_version(latest_tag) > _parse_version(APP_VERSION)
@@ -134,6 +136,9 @@ def start_update() -> None:
     if not getattr(sys, "frozen", False):
         raise ValueError("只有打包后的 EXE 才支持自动更新，请前往 GitHub 手动下载")
     download_url: str = _latest_release["downloadUrl"]
+    _allowed_download_hosts = ("https://github.com/", "https://objects.githubusercontent.com/")
+    if not any(download_url.startswith(p) for p in _allowed_download_hosts):
+        raise ValueError(f"非法下载地址: {download_url!r}")
     current_exe = Path(sys.executable).resolve()
     _update_state = {"status": "downloading", "downloaded": 0, "total": 0, "error": ""}
 
@@ -1823,6 +1828,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
+
+        if method in ("POST", "PUT", "DELETE"):
+            origin = self.headers.get("Origin", "")
+            if origin:
+                port = self.server.server_address[1]
+                if origin != f"http://127.0.0.1:{port}":
+                    self.send_error(HTTPStatus.FORBIDDEN)
+                    return
 
         if path.startswith("/api/"):
             try:
