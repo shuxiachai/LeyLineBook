@@ -20,7 +20,7 @@
         </div>
       </div>
       <nav aria-label="主菜单">
-        <button class="nav-item active" data-view="today"><span>今日任务</span><b id="navRemaining">0</b></button>
+        <button class="nav-item active" data-view="today"><span id="navTodayLabel">今日任务</span><b id="navRemaining">0</b></button>
         <button class="nav-item" data-view="story"><span>剧情任务</span><b id="storyRemaining">0</b></button>
         <button class="nav-item" data-view="accounts"><span>号主与任务</span></button>
         <button class="nav-item" data-view="activities"><span>限时活动</span></button>
@@ -62,7 +62,7 @@
 
         <div class="future-banner hidden" id="futureBanner">
           <span class="future-banner-label">预览</span>
-          <span>此日期尚未到来，以下任务届时将到期，<strong>无法进行任何操作</strong>。</span>
+          <span>此日期尚未到来，以下任务届时将到期，<strong>无法对任务进行操作</strong>。</span>
         </div>
 
         <div class="section-toolbar">
@@ -234,7 +234,7 @@
               <h3>顶部汇总卡片</h3>
               <ul>
                 <li><strong>总进度</strong>：所有今日到期任务中已完成的数量及进度条</li>
-                <li><strong>每日进度</strong>：体力/狗粮/质变仪/壶/爱可菲料理/探索派遣 的专项进度</li>
+                <li><strong>每日进度</strong>：体力/狗粮/质变仪/壶/爱可菲料理/探索派遣 的专项进度，这类任务按各自冷却或周期出现，不一定每天都需要完成</li>
                 <li><strong>待完成</strong>：当前还未完成的任务数量</li>
               </ul>
               <h3>完成与撤销</h3>
@@ -243,8 +243,9 @@
               <p>每个号主的任务组内，任务按<strong>未完成 → 已完成 → 冷却中</strong>的顺序从左到右排列。</p>
               <h3>切换日期与补记</h3>
               <p>顶部右上角的日期选择器可切换到历史日期进行查看或补记。点击 <span class="ui-ref">回到今天</span> 恢复当前游戏日。补记的完成时间以实际点击时刻为准，记录日期归入所选历史日期。</p>
+              <p>切换到<strong>未来日期</strong>时进入预览模式：顶部汇总卡片隐藏，显示预览横幅，任务仅供参考，无法对任务进行操作。</p>
               <h3>自动刷新</h3>
-              <p>今日任务页每分钟自动刷新一次。质变仪/探索派遣的冷却倒计时归零时，会立即触发刷新，恢复可点击状态，无需手动操作。</p>
+              <p>查看今日任务时，页面每分钟自动刷新一次（切换到历史或未来日期后不会触发）。质变仪/探索派遣的冷却倒计时归零时，会立即触发刷新，恢复可点击状态，无需手动操作。</p>
             </section>
 
             <section class="guide-section" id="guide-tasks">
