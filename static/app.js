@@ -591,7 +591,7 @@ function startCooldownTicker() {
           state.selectedDate = todayStr;
           document.querySelector("#selectedDate").value = todayStr;
         }
-        if (state.selectedDate === todayStr) {
+        if (state.selectedDate === todayStr && !document.querySelector("dialog[open]")) {
           loadState().catch(() => {});
         }
       }
@@ -1526,6 +1526,8 @@ async function checkForUpdate(silent = false) {
   if (btn) { btn.disabled = true; btn.textContent = "检查中…"; }
   try {
     const result = await api("/api/update/check");
+    const vLabel = document.querySelector("#currentVersionLabel");
+    if (vLabel) vLabel.textContent = `v${result.current}`;
     if (result.hasUpdate) {
       document.querySelector("#updateBannerVersion").textContent = `v${result.latest}`;
       document.querySelector("#updateBanner").hidden = false;
