@@ -63,7 +63,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 10
-APP_VERSION = "2.1.3"
+APP_VERSION = "2.1.4"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1756,14 +1756,18 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> 
                     next_due = precise_used_at + timedelta(hours=hours)
                     next_due_text = next_due.isoformat(timespec="minutes")
                 else:
-                    base_date = max(date.fromisoformat(previous_due), date.fromisoformat(task_date))
+                    if not task["interval_days"]:
+                        raise ValueError("任务冷却天数未配置，请检查任务设置")
+                    prev_date = date.fromisoformat(previous_due) if previous_due else date.fromisoformat(task_date)
+                    base_date = max(prev_date, date.fromisoformat(task_date))
                     next_due_text = (base_date + timedelta(days=task["interval_days"])).isoformat()
                 connection.execute(
                     "UPDATE tasks SET next_due = ? WHERE id = ?",
                     (next_due_text, task_id),
                 )
             elif task["recurrence"] == "monthly":
-                base_date = max(date.fromisoformat(previous_due), date.fromisoformat(task_date))
+                prev_date = date.fromisoformat(previous_due) if previous_due else date.fromisoformat(task_date)
+                base_date = max(prev_date, date.fromisoformat(task_date))
                 next_due = next_month_occurrence(base_date, task["monthly_day"])
                 connection.execute(
                     "UPDATE tasks SET next_due = ? WHERE id = ?",
