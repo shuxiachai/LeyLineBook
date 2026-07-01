@@ -342,6 +342,9 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .task-group-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
 .task-group-head h3 { margin: 0; font-size: 16px; }
 .task-group-head span { color: var(--muted); font-size: 12px; }
+.task-group-head-right { display: flex; align-items: center; gap: 8px; }
+.task-group-complete-btn { padding: 6px 14px; font-size: 13px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
+.task-group-complete-btn:hover { border-color: var(--hover-border); color: var(--ink); }
 .task-list { display: flex; flex-wrap: wrap; gap: 9px; }
 .task-chip { border: 1px solid var(--chip-border); border-radius: 10px; padding: 10px 13px; background: var(--surface-soft); display: flex; align-items: center; gap: 9px; color: var(--ink); }
 .task-chip::before { content: ""; width: 17px; height: 17px; border: 2px solid var(--chip-check); border-radius: 6px; }

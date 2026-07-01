@@ -62,8 +62,8 @@ NOTE_TAGS = ("好感队", "委托")
 DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"))
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
-HEARTBEAT_TIMEOUT = 10
-APP_VERSION = "2.1.4"
+HEARTBEAT_TIMEOUT = 75
+APP_VERSION = "2.1.5"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1042,10 +1042,10 @@ def list_history(start_date: str, end_date: str, account_id: int | None = None) 
         ]
 
 
-def _parse_proxy_until(payload: dict) -> str:
+def _parse_proxy_until(payload: dict) -> str | None:
     raw = str(payload.get("proxyUntil", "")).strip()
     if not raw:
-        raise ValueError("截止日期不能为空")
+        return None
     try:
         return date.fromisoformat(raw).isoformat()
     except ValueError:
