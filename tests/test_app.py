@@ -62,6 +62,12 @@ def seed_test_fixture(connection):
 
 class TaskRecorderTest(unittest.TestCase):
     def setUp(self):
+        # Pin game_today to a fixed date within the 2026-05-20 version cycle so
+        # configure_fixed_tasks always initialises next_due values consistently,
+        # regardless of when the tests are actually run.
+        self._game_today_patch = patch("app.game_today", return_value=date(2026, 6, 15))
+        self._game_today_patch.start()
+
         self.temp_dir = tempfile.TemporaryDirectory()
         app.DB_PATH = Path(self.temp_dir.name) / "test.db"
         app.initialize_database()
@@ -75,6 +81,7 @@ class TaskRecorderTest(unittest.TestCase):
             app.configure_task_groups(connection)
 
     def tearDown(self):
+        self._game_today_patch.stop()
         self.temp_dir.cleanup()
 
     def test_fixture_creates_accounts_tasks_and_history(self):

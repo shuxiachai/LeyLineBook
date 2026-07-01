@@ -536,12 +536,7 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
     const countable = group.tasks.filter((task) => !isLongCooling(task)).length;
-    const taskOrder = (t) => {
-      if ((t.name === "探索派遣" || t.name === "质变仪") && (t.cooldown_remaining_seconds || 0) > 0 && !t.completed) return 2;
-      if (t.completed) return 1;
-      return 0;
-    };
-    const chips = [...group.tasks].sort((a, b) => taskOrder(a) - taskOrder(b)).map((task) => {
+    const chips = group.tasks.map((task) => {
       let dueText = "";
       if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta cooldown-remaining" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
       else if (task.name === "壶" && task.completed && task.next_due) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
