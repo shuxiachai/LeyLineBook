@@ -561,7 +561,9 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
       const chipClass = expeditionCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
       return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
     }).join("");
-    return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><span>${done} / ${countable} 完成</span></div><div class="task-list">${chips}</div></article>`;
+    const pending = group.tasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0) && !isLongCooling(task)).length;
+    const completeBtn = !readOnly && pending > 0 ? `<button class="task-group-complete-btn" data-complete-account="${accountId}">一键完成</button>` : "";
+    return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><div class="task-group-head-right"><span>${done} / ${countable} 完成</span>${completeBtn}</div></div><div class="task-list">${chips}</div></article>`;
   }).join("");
 }
 
@@ -1190,6 +1192,19 @@ async function handleAction(target) {
     return;
   }
 
+  const completeAccountId = target.closest("[data-complete-account]")?.dataset.completeAccount;
+  if (completeAccountId) {
+    if (state.selectedDate > localDateString(gameDate())) return;
+    const taskIds = state.data.dueTasks
+      .filter((t) => t.account_id === Number(completeAccountId) && !t.completed && !(t.cooldown_remaining_seconds > 0))
+      .map((t) => t.id);
+    if (!taskIds.length) return;
+    await api("/api/tasks/complete-all", { method: "POST", body: JSON.stringify({ date: state.selectedDate, taskIds }) });
+    await loadState();
+    showToast("该号主所有待办已完成");
+    return;
+  }
+
   const noteChoice = target.closest("[data-task-note-choice]")?.dataset.taskNoteChoice;
   if (noteChoice) {
     if (state.editingTaskNotes.has(noteChoice)) {
@@ -1804,12 +1819,13 @@ async function initialize() {
   await loadState();
   window.setInterval(() => {
     if (state.currentView !== "today") return;
+    if (document.querySelector("dialog[open]")) return;
     const todayStr = localDateString(gameDate());
     if (state.selectedDate < todayStr) {
       state.selectedDate = todayStr;
       document.querySelector("#selectedDate").value = todayStr;
     }
-    if (state.selectedDate === todayStr && !document.querySelector("dialog[open]")) {
+    if (state.selectedDate === todayStr) {
       loadState().catch((error) => showToast(error.message));
     }
   }, 60000);
