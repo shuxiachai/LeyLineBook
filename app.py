@@ -63,7 +63,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.1.6"
+APP_VERSION = "2.1.7"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1176,19 +1176,43 @@ def reset_database() -> None:
     initialize_database()
 
 
+def build_backup_payload() -> dict:
+    with db_connection() as connection:
+        return {
+            "exportedAt": now_text(),
+            "accounts": [
+                {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
+                for row in connection.execute("SELECT * FROM accounts")
+            ],
+            "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
+            "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
+            "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
+            "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
+            "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
+        }
+
+
+def _write_pre_import_snapshot() -> None:
+    snapshot = build_backup_payload()
+    if not snapshot["accounts"] and not snapshot["records"]:
+        return
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = DB_PATH.parent / f"pre-import-{stamp}.json"
+    path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    old = sorted(DB_PATH.parent.glob("pre-import-*.json"))
+    for stale in old[:-5]:
+        stale.unlink(missing_ok=True)
+
+
 def import_backup(payload: dict) -> None:
     if not isinstance(payload.get("accounts"), list):
         raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    _write_pre_import_snapshot()
     with db_connection() as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
-        connection.executescript("""
-            DELETE FROM task_records;
-            DELETE FROM tasks;
-            DELETE FROM account_group_notes;
-            DELETE FROM story_tasks;
-            DELETE FROM custom_task_tags;
-            DELETE FROM accounts;
-        """)
+        for table in ("task_records", "tasks", "account_group_notes",
+                      "story_tasks", "custom_task_tags", "accounts"):
+            connection.execute(f"DELETE FROM {table}")
         for row in payload.get("customTags", []):
             connection.execute(
                 "INSERT OR IGNORE INTO custom_task_tags(id,name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?,?)",
@@ -1768,7 +1792,10 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> 
             elif task["recurrence"] == "monthly":
                 prev_date = date.fromisoformat(previous_due) if previous_due else date.fromisoformat(task_date)
                 base_date = max(prev_date, date.fromisoformat(task_date))
-                next_due = next_month_occurrence(base_date, task["monthly_day"])
+                if base_date.day < task["monthly_day"]:
+                    next_due = monthly_occurrence(base_date, task["monthly_day"])
+                else:
+                    next_due = next_month_occurrence(base_date, task["monthly_day"])
                 connection.execute(
                     "UPDATE tasks SET next_due = ? WHERE id = ?",
                     (next_due.isoformat(), task_id),
@@ -1886,20 +1913,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_json(dict(_update_state))
             return
         if method == "GET" and path == "/api/export":
-            with db_connection() as connection:
-                data = {
-                    "exportedAt": now_text(),
-                    "accounts": [
-                        {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
-                        for row in connection.execute("SELECT * FROM accounts")
-                    ],
-                    "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
-                    "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
-                    "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
-                    "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
-                    "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
-                }
-            self.send_json(data)
+            self.send_json(build_backup_payload())
             return
         if method == "POST" and path == "/api/import":
             length = int(self.headers.get("Content-Length", "0"))
