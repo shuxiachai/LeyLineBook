@@ -359,6 +359,22 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .task-chip .schedule-meta { display: block; margin-top: 3px; }
 .task-chip .task-note { display: block; margin-top: 2px; color: var(--green); font-size: 11px; }
 .task-chip .task-note-boss { color: var(--gold); }
+.task-chip .task-note-resin { color: var(--warning-text); }
+.resin-btn { margin-left: 6px; padding: 3px 8px; border: 1px solid var(--chip-border); border-radius: 6px; font-size: 11px; color: var(--muted); white-space: nowrap; align-self: center; }
+.resin-btn:hover { border-color: var(--hover-border); color: var(--ink); }
+.resin-dialog form { min-width: 320px; }
+.resin-display-row { display: flex; align-items: center; justify-content: center; gap: 16px; margin: 8px 0 2px; }
+.resin-step { width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface-soft); color: var(--ink); font-size: 17px; line-height: 1; cursor: pointer; }
+.resin-step:hover { border-color: var(--hover-border); }
+.resin-value-display { display: flex; align-items: baseline; gap: 6px; min-width: 100px; justify-content: center; }
+.resin-value-display output { font-size: 36px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.resin-max { color: var(--muted); font-size: 13px; }
+#resinSlider { width: 100%; margin: 12px 0 6px; accent-color: var(--green); cursor: pointer; }
+.resin-quick-btns { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin: 4px 0; }
+.resin-quick-btn { padding: 5px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.resin-quick-btn:hover { border-color: var(--hover-border); color: var(--ink); }
+.resin-preview { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
+.activity-enable-all { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
 .task-chip .task-note-expedition { color: var(--muted); }
 .compact .task-group { padding: 13px 16px; }
 .cooldown-chip { cursor: default; }
