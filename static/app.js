@@ -42,6 +42,9 @@ const noteTagDefinitions = ["好感队", "委托", "木偶食材"];
 const noNotesTaskNames = new Set(["爱可菲料理", "狗粮", "深境螺旋", "幻想真境剧诗", "危战"]);
 const WEEKLY_BOSS_PREFIX = "周本:";
 const EXPEDITION_PREFIX = "派遣:";
+const RESIN_PREFIX = "树脂:";
+const RESIN_MAX = 200;
+const RESIN_MINUTES_PER_POINT = 8;
 const expeditionDurations = ["20小时", "15小时"];
 const weeklyBossNames = [
   "北风的王狼",
@@ -548,16 +551,21 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
         if (!task.notes) return "";
         const allNotes = parseTaskNotes(task.notes);
         const bosses = allNotes.filter((n) => n.startsWith(WEEKLY_BOSS_PREFIX)).map((n) => n.slice(WEEKLY_BOSS_PREFIX.length));
-        const regular = allNotes.filter((n) => !n.startsWith(WEEKLY_BOSS_PREFIX) && !n.startsWith(EXPEDITION_PREFIX));
+        const regular = allNotes.filter((n) => !n.startsWith(WEEKLY_BOSS_PREFIX) && !n.startsWith(EXPEDITION_PREFIX) && !n.startsWith(RESIN_PREFIX));
         return (regular.length ? `<small class="task-note">备注：${escapeHtml(regular.join("、"))}</small>` : "")
           + (bosses.length ? `<small class="task-note task-note-boss">周本：${escapeHtml(bosses.join("、"))}</small>` : "");
       })();
+      const resinText = task.name === "体力" ? (() => {
+        const status = resinStatus(task.notes);
+        return status ? `<small class="task-note task-note-resin">${escapeHtml(status.text)}</small>` : "";
+      })() : "";
+      const resinBtn = task.name === "体力" && !readOnly ? `<span class="resin-btn" role="button" data-resin-task="${task.id}" title="记录当前树脂（可选）">树脂</span>` : "";
       const expeditionCooling = (task.name === "探索派遣" || task.name === "质变仪") && (task.cooldown_remaining_seconds || 0) > 0 && !task.completed;
       const chipClass = expeditionCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
-      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}</span></button>`;
+      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}${resinText}</span>${resinBtn}</button>`;
     }).join("");
     const pending = group.tasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0) && !isLongCooling(task)).length;
-    const completeBtn = !readOnly && pending > 0 ? `<button class="task-group-complete-btn" data-complete-account="${accountId}">一键完成</button>` : "";
+    const completeBtn = !readOnly && pending > 0 ? `<button class="task-group-complete-btn" data-complete-account="${accountId}">一键完成 (${pending})</button>` : "";
     return `<article class="task-group" data-account-id="${accountId}"><div class="task-group-head"><h3>${escapeHtml(group.name)}${makeProxyBadge(group.proxyUntil)}</h3><div class="task-group-head-right"><span>${done} / ${countable} 完成</span>${completeBtn}</div></div><div class="task-list">${chips}</div></article>`;
   }).join("");
 }
@@ -622,6 +630,7 @@ function renderToday() {
   document.querySelector("#completeAll").classList.toggle("hidden", isFutureDate);
   const actionable = dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).length;
   document.querySelector("#completeAll").disabled = actionable === 0;
+  document.querySelector("#completeAll").textContent = actionable > 0 ? `全部标记完成 (${actionable})` : "全部标记完成";
   document.querySelector("#dueTaskGroups").innerHTML = taskGroupsHtml(dueTasks, "这一天没有待办任务，轻松收工。", isFutureDate);
   renderScheduleSettings();
   startCooldownTicker();
@@ -695,7 +704,7 @@ function renderActivities() {
       const dateRange = tag.start_date
         ? `${formatActivityDate(tag.start_date)} 10:00 — ${formatActivityDate(calcActivityEndDate(tag.start_date, tag.duration_days))} 03:59`
         : "";
-      return `<div class="activity-item"><div class="activity-item-info"><span class="activity-name">${escapeHtml(tag.name)}</span>${dateRange ? `<span class="activity-date-range">${dateRange}</span>` : ""}</div><span class="activity-badge">${tag.duration_days} 天</span><button class="icon-button" data-remove-custom-tag="${tag.id}" aria-label="删除">✕</button></div>`;
+      return `<div class="activity-item"><div class="activity-item-info"><span class="activity-name">${escapeHtml(tag.name)}</span>${dateRange ? `<span class="activity-date-range">${dateRange}</span>` : ""}</div><span class="activity-badge">${tag.duration_days} 天</span><button class="button ghost activity-enable-all" data-enable-all-tag="${tag.id}">全部启用</button><button class="icon-button" data-remove-custom-tag="${tag.id}" aria-label="删除">✕</button></div>`;
     }).join("");
     html += `</div>`;
   }
@@ -891,6 +900,29 @@ function expeditionHoursFromNotes(notes) {
   return 20;
 }
 
+function parseResinNote(notes) {
+  const note = parseTaskNotes(notes).find((n) => n.startsWith(RESIN_PREFIX));
+  if (!note) return null;
+  const match = note.slice(RESIN_PREFIX.length).match(/^(\d+)@(.+)$/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  const recordedAt = new Date(match[2]);
+  if (!Number.isFinite(value) || Number.isNaN(recordedAt.getTime())) return null;
+  return { value, recordedAt };
+}
+
+function resinStatus(notes) {
+  const parsed = parseResinNote(notes);
+  if (!parsed) return null;
+  const elapsedMinutes = (Date.now() - parsed.recordedAt.getTime()) / 60000;
+  const current = Math.min(RESIN_MAX, parsed.value + Math.floor(elapsedMinutes / RESIN_MINUTES_PER_POINT));
+  if (current >= RESIN_MAX) return { current, text: "树脂已回满" };
+  const fullAt = new Date(parsed.recordedAt.getTime() + (RESIN_MAX - parsed.value) * RESIN_MINUTES_PER_POINT * 60000);
+  const sameDay = fullAt.toDateString() === new Date().toDateString();
+  const timeText = `${String(fullAt.getHours()).padStart(2, "0")}:${String(fullAt.getMinutes()).padStart(2, "0")}`;
+  return { current, text: `树脂约 ${current} · ${sameDay ? "" : "明日 "}${timeText} 回满` };
+}
+
 function renderTaskNoteEditor() {
   if (!state.editingTaskName) return;
   const isStamina = state.editingTaskName === "体力";
@@ -905,7 +937,11 @@ function renderTaskNoteEditor() {
   const weeklyBossSection = document.querySelector("#weeklyBossSection");
   weeklyBossSection.classList.toggle("hidden", !isStamina);
   if (isStamina) {
-    document.querySelector("#weeklyBossTags").innerHTML = weeklyBossNames.map((boss) => {
+    const notedBosses = [...state.editingTaskNotes]
+      .filter((note) => note.startsWith(WEEKLY_BOSS_PREFIX))
+      .map((note) => note.slice(WEEKLY_BOSS_PREFIX.length));
+    const allBosses = [...weeklyBossNames, ...notedBosses.filter((boss) => !weeklyBossNames.includes(boss))];
+    document.querySelector("#weeklyBossTags").innerHTML = allBosses.map((boss) => {
       const key = WEEKLY_BOSS_PREFIX + boss;
       const active = state.editingTaskNotes.has(key);
       return `<button type="button" class="config-tag note ${active ? "active" : ""}" data-task-note-choice="${escapeHtml(key)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(boss)}</button>`;
@@ -921,7 +957,7 @@ function renderTaskNoteEditor() {
     }).join("");
   }
   document.querySelector("#selectedNoteTags").innerHTML = [...state.editingTaskNotes]
-    .filter((note) => !presets.includes(note) && !note.startsWith(WEEKLY_BOSS_PREFIX) && !note.startsWith(EXPEDITION_PREFIX))
+    .filter((note) => !presets.includes(note) && !note.startsWith(WEEKLY_BOSS_PREFIX) && !note.startsWith(EXPEDITION_PREFIX) && !note.startsWith(RESIN_PREFIX))
     .map((note) => `<button type="button" class="config-tag note active" data-task-note-choice="${escapeHtml(note)}" aria-label="移除备注 ${escapeHtml(note)}">× ${escapeHtml(note)}</button>`)
     .join("") || '<span class="muted-note">还没有其他备注</span>';
 }
@@ -935,6 +971,7 @@ function openTaskNoteDialog(task) {
   document.querySelector("#taskNoteDialogTitle").textContent = `${task.name} · 任务设置`;
   document.querySelector("#removeConfiguredTask").classList.toggle("hidden", state.editingTaskIsNew);
   document.querySelector("#customTaskNote").value = "";
+  document.querySelector("#customBossNote").value = "";
   renderTaskNoteEditor();
   document.querySelector("#taskNoteDialog").showModal();
 }
@@ -947,6 +984,18 @@ function addCustomTaskNote() {
     return;
   }
   state.editingTaskNotes.add(note);
+  input.value = "";
+  renderTaskNoteEditor();
+}
+
+function addCustomBossNote() {
+  const input = document.querySelector("#customBossNote");
+  const boss = input.value.trim();
+  if (!boss) {
+    showToast("请先填写周本名称");
+    return;
+  }
+  state.editingTaskNotes.add(WEEKLY_BOSS_PREFIX + boss);
   input.value = "";
   renderTaskNoteEditor();
 }
@@ -971,6 +1020,59 @@ async function saveTaskNotes(event) {
   document.querySelector("#taskNoteDialog").close();
   await loadState();
   showToast(state.editingTaskIsNew ? "任务和备注已添加" : "任务和备注已保存");
+}
+
+function updateResinDialogView() {
+  const value = Number(document.querySelector("#resinSlider").value);
+  document.querySelector("#resinValueDisplay").textContent = state.resinDialogHasValue ? value : "—";
+  const preview = document.querySelector("#resinPreview");
+  if (!state.resinDialogHasValue) {
+    preview.textContent = "拖动滑块或点击快捷数值填写";
+    return;
+  }
+  if (value >= RESIN_MAX) {
+    preview.textContent = "树脂已回满";
+    return;
+  }
+  const fullAt = new Date(Date.now() + (RESIN_MAX - value) * RESIN_MINUTES_PER_POINT * 60000);
+  const sameDay = fullAt.toDateString() === new Date().toDateString();
+  const timeText = `${String(fullAt.getHours()).padStart(2, "0")}:${String(fullAt.getMinutes()).padStart(2, "0")}`;
+  preview.textContent = `预计${sameDay ? "今天" : "明日"} ${timeText} 回满`;
+}
+
+function setResinDialogValue(value) {
+  state.resinDialogHasValue = true;
+  document.querySelector("#resinSlider").value = Math.min(RESIN_MAX, Math.max(0, value));
+  updateResinDialogView();
+}
+
+function openResinDialog(task) {
+  state.editingResinTaskId = task.id;
+  const status = resinStatus(task.notes);
+  state.resinDialogHasValue = Boolean(status);
+  document.querySelector("#resinSlider").value = status ? status.current : 0;
+  document.querySelector("#clearResin").classList.toggle("hidden", !parseResinNote(task.notes));
+  updateResinDialogView();
+  document.querySelector("#resinDialog").showModal();
+}
+
+async function saveResinNote(clear) {
+  const task = state.data.dueTasks.find((item) => item.id === state.editingResinTaskId)
+    || state.data.tasks.find((item) => item.id === state.editingResinTaskId);
+  if (!task) return;
+  const notes = parseTaskNotes(task.notes).filter((note) => !note.startsWith(RESIN_PREFIX));
+  if (!clear) {
+    if (!state.resinDialogHasValue) {
+      showToast("请先选择当前树脂数量");
+      return;
+    }
+    const value = Number(document.querySelector("#resinSlider").value);
+    notes.push(`${RESIN_PREFIX}${value}@${localDateTimeInputValue(new Date())}`);
+  }
+  await api(`/api/tasks/${task.id}/notes`, { method: "POST", body: JSON.stringify({ notes }) });
+  document.querySelector("#resinDialog").close();
+  await loadState();
+  showToast(clear ? "树脂记录已清除" : "树脂记录已保存");
 }
 
 function openTransformerUsageDialog(task) {
@@ -1277,6 +1379,13 @@ async function handleAction(target) {
     return;
   }
 
+  const resinTaskId = target.closest("[data-resin-task]")?.dataset.resinTask;
+  if (resinTaskId) {
+    const task = state.data.dueTasks.find((item) => item.id === Number(resinTaskId));
+    if (task) openResinDialog(task);
+    return;
+  }
+
   const taskId = target.closest("[data-toggle-task]")?.dataset.toggleTask;
   if (taskId && state.selectedDate > localDateString(gameDate())) return;
   if (taskId) {
@@ -1356,6 +1465,20 @@ async function handleAction(target) {
     await api(`/api/custom-tags/${removeCustomTagId}`, { method: "DELETE", body: "{}" });
     await loadState();
     showToast("自定义任务已删除");
+    return;
+  }
+  const enableAllTagId = target.closest("[data-enable-all-tag]")?.dataset.enableAllTag;
+  if (enableAllTagId) {
+    const tag = (state.data.customTags || []).find((item) => item.id === Number(enableAllTagId));
+    const confirmed = await confirmAction({
+      title: `为全部号主启用「${tag?.name || "该活动"}」？`,
+      message: "将为所有尚未启用此活动的号主添加该任务，已启用的号主不受影响。",
+      confirmText: "全部启用",
+    });
+    if (!confirmed) return;
+    const result = await api(`/api/custom-tags/${enableAllTagId}/enable-all`, { method: "POST", body: "{}" });
+    await loadState();
+    showToast(result.enabled > 0 ? `已为 ${result.enabled} 个号主启用该活动` : "所有号主均已启用该活动");
     return;
   }
   const addTaskId = target.closest("[data-add-task]")?.dataset.addTask;
@@ -1775,6 +1898,23 @@ function bindEvents() {
       event.preventDefault();
       addCustomTaskNote();
     }
+  });
+  document.querySelector("#addCustomBossNote").addEventListener("click", addCustomBossNote);
+  document.querySelector("#customBossNote").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addCustomBossNote();
+    }
+  });
+  document.querySelector("#resinForm").addEventListener("submit", (event) => { event.preventDefault(); saveResinNote(false).catch((error) => showToast(error.message)); });
+  document.querySelector("#clearResin").addEventListener("click", () => saveResinNote(true).catch((error) => showToast(error.message)));
+  document.querySelector("#resinSlider").addEventListener("input", () => { state.resinDialogHasValue = true; updateResinDialogView(); });
+  document.querySelector("#resinQuickBtns").addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-resin-set]");
+    if (btn) setResinDialogValue(Number(btn.dataset.resinSet));
+  });
+  document.querySelectorAll("[data-resin-step]").forEach((btn) => {
+    btn.addEventListener("click", () => setResinDialogValue(Number(document.querySelector("#resinSlider").value) + Number(btn.dataset.resinStep)));
   });
   document.querySelector("#removeConfiguredTask").addEventListener("click", () => removeConfiguredTask().catch((error) => showToast(error.message)));
   document.querySelector("#taskRecurrence").addEventListener("change", updateScheduleFields);

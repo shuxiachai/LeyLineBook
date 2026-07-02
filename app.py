@@ -18,7 +18,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,7 +63,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.1.7"
+APP_VERSION = "2.2.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -931,7 +931,6 @@ def load_state(selected_date: str) -> dict:
             )
         }
     due_tasks = []
-    cooling_tasks = []
     all_tasks = []
     for task in tasks:
         task["completed"] = bool(task["completed"])
@@ -1004,7 +1003,6 @@ def load_state(selected_date: str) -> dict:
         "accounts": accounts,
         "tasks": all_tasks,
         "dueTasks": due_tasks,
-        "coolingTasks": cooling_tasks,
         "accountNotes": account_notes,
         "customTags": custom_tags,
         "storyTasks": list_story_tasks(),
@@ -1443,6 +1441,41 @@ def set_account_custom_tag(account_id: int, payload: dict) -> None:
         )
 
 
+def enable_custom_tag_for_all(tag_id: int) -> int:
+    with db_connection() as connection:
+        tag = connection.execute(
+            "SELECT id, name, start_date FROM custom_task_tags WHERE id = ?", (tag_id,)
+        ).fetchone()
+        if not tag:
+            raise ValueError("自定义任务标签不存在")
+        tag_start = date.fromisoformat(tag["start_date"]) if tag["start_date"] else game_today()
+        next_due = tag_start.isoformat()
+        enabled_count = 0
+        account_ids = [
+            row[0]
+            for row in connection.execute(
+                "SELECT id FROM accounts WHERE active = 1 AND deleted = 0"
+            )
+        ]
+        for account_id in account_ids:
+            existing = connection.execute(
+                "SELECT id FROM tasks WHERE account_id = ? AND custom_tag_id = ? AND active = 1 LIMIT 1",
+                (account_id, tag_id),
+            ).fetchone()
+            if existing:
+                continue
+            connection.execute(
+                """
+                INSERT INTO tasks(
+                    account_id, name, recurrence, next_due, sort_order, custom_tag_id, created_at
+                ) VALUES(?, ?, 'once', ?, ?, ?, ?)
+                """,
+                (account_id, tag["name"], next_due, _ACTIVITY_TASK_SORT_ORDER, tag_id, now_text()),
+            )
+            enabled_count += 1
+        return enabled_count
+
+
 def reorder_accounts(payload: dict) -> None:
     raw_ids = payload.get("accountIds", [])
     if not isinstance(raw_ids, list) or not raw_ids:
@@ -1730,9 +1763,9 @@ def set_task_notes(task_id: int, payload: dict) -> None:
         )
 
 
-def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> None:
+def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, connection=None) -> None:
     parsed_task_date = date.fromisoformat(task_date)
-    with db_connection() as connection:
+    with (db_connection() if connection is None else nullcontext(connection)) as connection:
         task = connection.execute(
             "SELECT * FROM tasks WHERE id = ? AND active = 1", (task_id,)
         ).fetchone()
@@ -1812,8 +1845,9 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None) -> 
 
 
 def complete_all(task_date: str, task_ids: list[int]) -> None:
-    for task_id in task_ids:
-        toggle_task(int(task_id), task_date, True)
+    with db_connection() as connection:
+        for task_id in task_ids:
+            toggle_task(int(task_id), task_date, True, connection=connection)
 
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
@@ -2043,6 +2077,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         if match and method == "POST":
             set_account_custom_tag(int(match.group(1)), payload)
             self.send_json(None)
+            return
+        match = re.fullmatch(r"/api/custom-tags/(\d+)/enable-all", path)
+        if match and method == "POST":
+            self.send_json({"enabled": enable_custom_tag_for_all(int(match.group(1)))})
             return
         if method == "POST" and path == "/api/update/apply":
             start_update()
