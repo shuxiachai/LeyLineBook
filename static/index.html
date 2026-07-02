@@ -138,7 +138,7 @@
             <span>至</span>
             <input type="date" id="historyEnd" aria-label="历史结束日期">
             <select id="historyAccount" aria-label="按号主筛选"></select>
-            <button class="button ghost" id="loadHistory">查询</button>
+            <select id="historyTask" aria-label="按任务筛选"><option value="">全部任务</option></select>
           </div>
         </div>
         <div class="table-wrap">
@@ -339,8 +339,8 @@
               <h3>查询方式</h3>
               <ul>
                 <li>点击 <span class="ui-ref">最近一个月</span> 或 <span class="ui-ref">最近半年</span> 快捷按钮自动填入日期范围</li>
-                <li>或手动选择开始和结束日期，然后点击 <span class="ui-ref">查询</span></li>
-                <li>右侧下拉菜单可按号主筛选结果</li>
+                <li>或手动选择开始和结束日期，修改后立即重新查询</li>
+                <li>右侧下拉菜单可按号主筛选结果；旁边的任务下拉菜单可只看某一类任务（如体力、深境螺旋）的记录，切换时即时生效无需重新查询</li>
               </ul>
               <h3>补记说明</h3>
               <p>在今日任务页切换到历史日期后进行打卡，记录会归入所选历史日期。完成时间戳以实际点击时刻为准。</p>
@@ -358,7 +358,7 @@
               <p>将所有号主、任务配置、活动和完成历史导出为 JSON 文件。<strong>不包含账号密码</strong>（DPAPI 加密绑定本机，无法随文件迁移）。</p>
               <h3>导入备份</h3>
               <p>从 JSON 备份文件还原数据。账号密码需在导入后重新填写。</p>
-              <div class="guide-warn"><p>导入后当前所有数据将被完全替换，无法撤销。建议在导入前先导出一份当前备份。</p></div>
+              <div class="guide-warn"><p>导入后当前所有数据将被完全替换。程序会在导入前自动把当前数据保存为 <span class="ui-ref">pre-import-日期时间.json</span> 快照（与数据库同目录，最多保留 5 份），误导入时可用该文件重新导入还原。</p></div>
               <h3>版本与更新</h3>
               <p>程序启动时静默检查 GitHub Releases 是否有新版本，发现更新后在顶部显示横幅提示。可在此处手动检查。确认更新后自动下载并重启，无需手动操作。</p>
               <h3>清空数据库</h3>

@@ -1423,6 +1423,14 @@ function switchView(view) {
   if (view === "guide") initGuideSpy();
 }
 
+let historyRowsCache = [];
+
+function renderHistoryRows() {
+  const taskName = document.querySelector("#historyTask").value;
+  const rows = taskName ? historyRowsCache.filter((row) => row.task_name === taskName) : historyRowsCache;
+  document.querySelector("#historyRows").innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.task_date)}</td><td>${escapeHtml(row.account_name)}</td><td>${escapeHtml(row.task_name)}</td><td>${escapeHtml(row.completed_at.replace("T", " "))}</td></tr>`).join("") || '<tr><td colspan="4" class="empty-state">这个日期范围内还没有记录。</td></tr>';
+}
+
 async function loadHistory() {
   const start = document.querySelector("#historyStart").value;
   const end = document.querySelector("#historyEnd").value;
@@ -1430,8 +1438,13 @@ async function loadHistory() {
   let url = `/api/history?end=${encodeURIComponent(end)}`;
   if (start) url += `&start=${encodeURIComponent(start)}`;
   if (accountId) url += `&accountId=${encodeURIComponent(accountId)}`;
-  const rows = await api(url);
-  document.querySelector("#historyRows").innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.task_date)}</td><td>${escapeHtml(row.account_name)}</td><td>${escapeHtml(row.task_name)}</td><td>${escapeHtml(row.completed_at.replace("T", " "))}</td></tr>`).join("") || '<tr><td colspan="4" class="empty-state">这个日期范围内还没有记录。</td></tr>';
+  historyRowsCache = await api(url);
+  const taskSelect = document.querySelector("#historyTask");
+  const current = taskSelect.value;
+  const names = [...new Set(historyRowsCache.map((row) => row.task_name))].sort((a, b) => a.localeCompare(b, "zh"));
+  taskSelect.innerHTML = '<option value="">全部任务</option>' + names.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+  if (current && names.includes(current)) taskSelect.value = current;
+  renderHistoryRows();
 }
 
 function calendarMonthsAgo(reference, months) {
@@ -1765,7 +1778,11 @@ function bindEvents() {
   });
   document.querySelector("#removeConfiguredTask").addEventListener("click", () => removeConfiguredTask().catch((error) => showToast(error.message)));
   document.querySelector("#taskRecurrence").addEventListener("change", updateScheduleFields);
-  document.querySelector("#loadHistory").addEventListener("click", () => loadHistory().catch((error) => showToast(error.message)));
+  const refreshHistory = () => loadHistory().catch((error) => showToast(error.message));
+  ["#historyStart", "#historyEnd", "#historyAccount"].forEach((selector) => {
+    document.querySelector(selector).addEventListener("change", refreshHistory);
+  });
+  document.querySelector("#historyTask").addEventListener("change", renderHistoryRows);
   document.querySelectorAll("[data-history-months]").forEach((button) => {
     button.addEventListener("click", () => loadRecentHistory(Number(button.dataset.historyMonths)).catch((error) => showToast(error.message)));
   });
