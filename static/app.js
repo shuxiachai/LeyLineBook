@@ -911,6 +911,15 @@ function parseResinNote(notes) {
   return { value, recordedAt };
 }
 
+function resinDayLabel(fullAt) {
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfFullDay = new Date(fullAt.getFullYear(), fullAt.getMonth(), fullAt.getDate());
+  const dayDiff = Math.round((startOfFullDay - startOfToday) / 86400000);
+  if (dayDiff <= 0) return "";
+  return dayDiff === 1 ? "明日" : "后天";
+}
+
 function resinStatus(notes) {
   const parsed = parseResinNote(notes);
   if (!parsed) return null;
@@ -918,9 +927,9 @@ function resinStatus(notes) {
   const current = Math.min(RESIN_MAX, parsed.value + Math.floor(elapsedMinutes / RESIN_MINUTES_PER_POINT));
   if (current >= RESIN_MAX) return { current, text: "树脂已回满" };
   const fullAt = new Date(parsed.recordedAt.getTime() + (RESIN_MAX - parsed.value) * RESIN_MINUTES_PER_POINT * 60000);
-  const sameDay = fullAt.toDateString() === new Date().toDateString();
+  const dayLabel = resinDayLabel(fullAt);
   const timeText = `${String(fullAt.getHours()).padStart(2, "0")}:${String(fullAt.getMinutes()).padStart(2, "0")}`;
-  return { current, text: `树脂约 ${current} · ${sameDay ? "" : "明日 "}${timeText} 回满` };
+  return { current, text: `树脂约 ${current} · ${dayLabel ? `${dayLabel} ` : ""}${timeText} 回满` };
 }
 
 function renderTaskNoteEditor() {
@@ -1035,9 +1044,9 @@ function updateResinDialogView() {
     return;
   }
   const fullAt = new Date(Date.now() + (RESIN_MAX - value) * RESIN_MINUTES_PER_POINT * 60000);
-  const sameDay = fullAt.toDateString() === new Date().toDateString();
+  const dayLabel = resinDayLabel(fullAt) || "今天";
   const timeText = `${String(fullAt.getHours()).padStart(2, "0")}:${String(fullAt.getMinutes()).padStart(2, "0")}`;
-  preview.textContent = `预计${sameDay ? "今天" : "明日"} ${timeText} 回满`;
+  preview.textContent = `预计${dayLabel} ${timeText} 回满`;
 }
 
 function setResinDialogValue(value) {

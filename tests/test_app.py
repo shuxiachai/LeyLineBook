@@ -500,8 +500,7 @@ class TaskRecorderTest(unittest.TestCase):
 
     def test_account_tasks_and_notes_can_be_toggled_as_tags(self):
         account = create_test_account({"name": "标签测试号"})
-        app.set_account_task_tag(account["id"], {"tag": "体力", "enabled": True})
-        app.set_account_note_tag(account["id"], {"tag": "好感队", "enabled": True})
+        app.set_account_task_tag(account["id"], {"tag": "体力", "enabled": True, "notes": ["好感队"]})
         app.set_account_task_tag(account["id"], {"tag": "深境螺旋", "enabled": True})
 
         tasks = [
@@ -529,21 +528,23 @@ class TaskRecorderTest(unittest.TestCase):
         }
         self.assertNotIn("体力", active_names)
 
-    def test_note_tag_toggle_preserves_weekly_boss_notes(self):
+    def test_task_notes_keep_weekly_boss_and_resin_entries(self):
         account = create_test_account({"name": "周本备注测试号"})
         app.set_account_task_tag(account["id"], {"tag": "体力", "enabled": True})
         stamina = next(
             task for task in app.load_state(date.today().isoformat())["tasks"]
             if task["account_id"] == account["id"] and task["name"] == "体力"
         )
-        app.set_task_notes(stamina["id"], {"notes": ["周本:吞星之鲸"]})
-        app.set_account_note_tag(account["id"], {"tag": "好感队", "enabled": True})
+        app.set_task_notes(
+            stamina["id"],
+            {"notes": ["好感队", "周本:吞星之鲸", "树脂:120@2026-06-15T12:00"]},
+        )
 
         updated = next(
             task for task in app.load_state(date.today().isoformat())["tasks"]
             if task["account_id"] == account["id"] and task["name"] == "体力"
         )
-        self.assertEqual(updated["notes"], "好感队、周本:吞星之鲸")
+        self.assertEqual(updated["notes"], "好感队、周本:吞星之鲸、树脂:120@2026-06-15T12:00")
 
     def test_new_task_and_notes_are_saved_together(self):
         account = create_test_account({"name": "任务草稿测试号"})
@@ -598,30 +599,17 @@ class TaskRecorderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             app.reorder_accounts({"accountIds": [reversed_ids[0], reversed_ids[0]]})
 
-    def test_daily_and_abyss_groups_support_tasks_and_notes(self):
+    def test_daily_and_abyss_groups_support_tasks(self):
         account = create_test_account({"name": "分组测试号"})
         app.set_account_task_tag(account["id"], {"tag": "质变仪", "enabled": True})
         app.set_account_task_tag(account["id"], {"tag": "壶", "enabled": True})
-        app.set_account_group_note(
-            account["id"], {"category": "daily", "note": "委托", "enabled": True}
-        )
-        app.set_account_group_note(
-            account["id"], {"category": "abyss", "note": "满星", "enabled": True}
-        )
 
         state = app.load_state(date.today().isoformat())
         tasks = [task for task in state["tasks"] if task["account_id"] == account["id"]]
         transformer = next(task for task in tasks if task["name"] == "质变仪")
         teapot = next(task for task in tasks if task["name"] == "壶")
-        notes = {
-            (item["category"], item["note"])
-            for item in state["accountNotes"]
-            if item["account_id"] == account["id"]
-        }
         self.assertEqual((transformer["recurrence"], transformer["interval_days"]), ("interval", 7))
         self.assertEqual((teapot["recurrence"], teapot["interval_days"]), ("interval", 3))
-        self.assertIn(("daily", "委托"), notes)
-        self.assertIn(("abyss", "满星"), notes)
 
     def test_activity_name_cannot_shadow_builtin_task(self):
         with self.assertRaisesRegex(ValueError, "不能与内置任务重名"):

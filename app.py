@@ -58,12 +58,11 @@ _TASK_SORT_ORDER = {
     "深境螺旋": 10, "幻想真境剧诗": 11, "危战": 12,
 }
 _ACTIVITY_TASK_SORT_ORDER = 6
-NOTE_TAGS = ("好感队", "委托")
 DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"))
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1650,90 +1649,6 @@ def set_account_task_tag(account_id: int, payload: dict) -> None:
         )
 
 
-def set_account_note_tag(account_id: int, payload: dict) -> None:
-    note_tag = require_text(payload, "tag")
-    if note_tag not in NOTE_TAGS:
-        raise ValueError("备注标签无效")
-    enabled = bool(payload.get("enabled"))
-    with db_connection() as connection:
-        task = connection.execute(
-            """
-            SELECT id, notes FROM tasks
-            WHERE account_id = ? AND name = '体力' AND recurrence = 'daily' AND active = 1
-            ORDER BY id DESC LIMIT 1
-            """,
-            (account_id,),
-        ).fetchone()
-        if not task:
-            raise ValueError("请先启用体力任务")
-        current = {
-            item.strip()
-            for item in re.split(r"[、,，]", task["notes"] or "")
-            if item.strip()
-        }
-        if enabled:
-            current.add(note_tag)
-        else:
-            current.discard(note_tag)
-        ordered = [tag for tag in NOTE_TAGS if tag in current]
-        ordered += [note for note in current if note.startswith("周本:") or note.startswith("派遣:")]
-        connection.execute(
-            "UPDATE tasks SET notes = ? WHERE id = ?",
-            ("、".join(ordered), task["id"]),
-        )
-
-
-def set_account_group_note(account_id: int, payload: dict) -> None:
-    category = str(payload.get("category", "")).strip()
-    if category not in {"daily", "abyss"}:
-        raise ValueError("备注分组无效")
-    note = require_text(payload, "note", 40)
-    enabled = bool(payload.get("enabled"))
-    with db_connection() as connection:
-        account = connection.execute(
-            "SELECT id FROM accounts WHERE id = ? AND active = 1", (account_id,)
-        ).fetchone()
-        if not account:
-            raise LookupError("没有找到该号主")
-        if enabled:
-            connection.execute(
-                """
-                INSERT OR IGNORE INTO account_group_notes(
-                    account_id, category, note, created_at
-                ) VALUES(?, ?, ?, ?)
-                """,
-                (account_id, category, note, now_text()),
-            )
-        else:
-            connection.execute(
-                """
-                DELETE FROM account_group_notes
-                WHERE account_id = ? AND category = ? AND note = ?
-                """,
-                (account_id, category, note),
-            )
-
-        if category == "daily":
-            notes = [
-                row[0]
-                for row in connection.execute(
-                    """
-                    SELECT note FROM account_group_notes
-                    WHERE account_id = ? AND category = 'daily'
-                    ORDER BY CASE note WHEN '好感队' THEN 1 WHEN '委托' THEN 2 ELSE 3 END, id
-                    """,
-                    (account_id,),
-                )
-            ]
-            connection.execute(
-                """
-                UPDATE tasks SET notes = ?
-                WHERE account_id = ? AND name = '体力' AND active = 1
-                """,
-                ("、".join(notes), account_id),
-            )
-
-
 def normalize_task_notes(raw_notes) -> str:
     if not isinstance(raw_notes, list):
         raise ValueError("备注格式无效")
@@ -1986,16 +1901,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/accounts/(\d+)/task-tags", path)
         if match and method == "POST":
             set_account_task_tag(int(match.group(1)), payload)
-            self.send_json(None)
-            return
-        match = re.fullmatch(r"/api/accounts/(\d+)/note-tags", path)
-        if match and method == "POST":
-            set_account_note_tag(int(match.group(1)), payload)
-            self.send_json(None)
-            return
-        match = re.fullmatch(r"/api/accounts/(\d+)/group-notes", path)
-        if match and method == "POST":
-            set_account_group_note(int(match.group(1)), payload)
             self.send_json(None)
             return
         match = re.fullmatch(r"/api/accounts/(\d+)/credentials", path)
