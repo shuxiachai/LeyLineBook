@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.2.2"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -480,7 +480,7 @@ def configure_fixed_tasks(connection: sqlite3.Connection) -> None:
         UPDATE tasks
         SET name = '深境螺旋', recurrence = 'monthly', monthly_day = 16,
             interval_days = NULL, next_due = ?
-        WHERE name IN ('深渊', '深境螺旋')
+        WHERE name IN ('深渊', '深境螺旋') AND recurrence != 'monthly'
         """,
         (abyss_due,),
     )
@@ -489,7 +489,7 @@ def configure_fixed_tasks(connection: sqlite3.Connection) -> None:
         UPDATE tasks
         SET recurrence = 'version', monthly_day = NULL,
             interval_days = NULL, next_due = ?
-        WHERE name = '危战'
+        WHERE name = '危战' AND recurrence != 'version'
         """,
         (war_due,),
     )
