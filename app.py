@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.2"
+APP_VERSION = "2.2.3"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1809,10 +1809,15 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
 
+        port = self.server.server_address[1]
+        host = self.headers.get("Host", "")
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+
         if method in ("POST", "PUT", "DELETE"):
             origin = self.headers.get("Origin", "")
             if origin:
-                port = self.server.server_address[1]
                 if origin != f"http://127.0.0.1:{port}":
                     self.send_error(HTTPStatus.FORBIDDEN)
                     return
@@ -2050,6 +2055,8 @@ def create_http_server(port: int) -> tuple[ExclusiveThreadingHTTPServer, int]:
 def heartbeat_watchdog() -> None:
     while True:
         time.sleep(5)
+        if _update_state["status"] == "downloading":
+            continue
         if _last_heartbeat and time.time() - _last_heartbeat > HEARTBEAT_TIMEOUT:
             print("心跳超时，程序自动退出。", flush=True)
             os._exit(0)
