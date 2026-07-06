@@ -535,13 +535,14 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   const _todayParts = localDateString(gameDate()).split("-").map(Number);
   const _endOfGameToday = new Date(_todayParts[0], _todayParts[1] - 1, _todayParts[2] + 1, 4, 0, 0);
-  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) > _endOfGameToday;
+  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= _endOfGameToday;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
     const countable = group.tasks.filter((task) => !isLongCooling(task)).length;
     const chips = group.tasks.map((task) => {
       let dueText = "";
       if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta cooldown-remaining" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
+      else if (task.name === "壶" && !task.completed && task.next_due && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
       else if (task.name === "壶" && task.completed && task.next_due) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
       else if (task.recurrence === "interval" && task.next_due && task.name !== "质变仪" && task.name !== "探索派遣" && task.name !== "壶") dueText = `<small class="schedule-meta">到期 ${escapeHtml(task.next_due)}</small>`;
       if (task.recurrence === "weekly" && task.event_end && task.completed) dueText = `<small class="schedule-meta">下次刷新 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;
@@ -560,9 +561,12 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
         return status ? `<small class="task-note task-note-resin">${escapeHtml(status.text)}</small>` : "";
       })() : "";
       const resinBtn = task.name === "体力" && !readOnly ? `<span class="resin-btn" role="button" data-resin-task="${task.id}" title="记录当前树脂（可选）">树脂</span>` : "";
-      const expeditionCooling = (task.name === "探索派遣" || task.name === "质变仪") && (task.cooldown_remaining_seconds || 0) > 0 && !task.completed;
-      const chipClass = expeditionCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
-      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${expeditionCooling || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}${resinText}</span>${resinBtn}</button>`;
+      const taskCooling = (task.cooldown_remaining_seconds || 0) > 0 && !task.completed;
+      const teapotCooling = task.name === "壶" && taskCooling;
+      const collectBtn = teapotCooling && !readOnly && state.selectedDate === localDateString(gameDate())
+        ? `<span class="resin-btn" role="button" data-collect-teapot="${task.id}" title="提前收取，冷却从今天重新计算">提前收取</span>` : "";
+      const chipClass = taskCooling ? "cooldown-chip" : (task.completed ? "completed" : "");
+      return `<button class="task-chip ${chipClass}" data-toggle-task="${task.id}" data-completed="${task.completed}" ${(taskCooling && !teapotCooling) || readOnly ? "disabled" : ""}><span class="task-chip-content"><span class="task-title">${escapeHtml(task.name)}</span>${dueText}${noteText}${resinText}</span>${resinBtn}${collectBtn}</button>`;
     }).join("");
     const pending = group.tasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0) && !isLongCooling(task)).length;
     const completeBtn = !readOnly && pending > 0 ? `<button class="task-group-complete-btn" data-complete-account="${accountId}">一键完成 (${pending})</button>` : "";
@@ -1395,12 +1399,31 @@ async function handleAction(target) {
     return;
   }
 
+  const collectTeapotId = target.closest("[data-collect-teapot]")?.dataset.collectTeapot;
+  if (collectTeapotId) {
+    if (state.selectedDate !== localDateString(gameDate())) return;
+    const confirmed = await confirmAction({
+      title: "提前收取壶的奖励？",
+      message: "确认后冷却将从今天重新计算，3 个游戏日后可再次收取。",
+      confirmText: "确认收取",
+    });
+    if (!confirmed) return;
+    await api(`/api/tasks/${collectTeapotId}/toggle`, {
+      method: "POST",
+      body: JSON.stringify({ date: state.selectedDate, completed: true, restartCycle: true }),
+    });
+    await loadState();
+    showToast("已提前收取，下次收取日期已从今天顺延");
+    return;
+  }
+
   const taskId = target.closest("[data-toggle-task]")?.dataset.toggleTask;
   if (taskId && state.selectedDate > localDateString(gameDate())) return;
   if (taskId) {
     const button = target.closest("[data-toggle-task]");
     const completed = button.dataset.completed !== "true";
     const task = state.data.dueTasks.find((item) => item.id === Number(taskId));
+    if (completed && (task?.cooldown_remaining_seconds || 0) > 0) return;
     if (completed && task?.name === "质变仪") {
       openTransformerUsageDialog(task);
       return;

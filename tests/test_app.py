@@ -599,6 +599,26 @@ class TaskRecorderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             app.reorder_accounts({"accountIds": [reversed_ids[0], reversed_ids[0]]})
 
+    def test_teapot_early_collect_restarts_cycle(self):
+        account = create_test_account({"name": "壶提前收取测试号"})
+        app.set_account_task_tag(account["id"], {"tag": "壶", "enabled": True})
+        task = next(
+            item for item in app.load_state("2026-06-20")["tasks"]
+            if item["account_id"] == account["id"] and item["name"] == "壶"
+        )
+
+        app.toggle_task(task["id"], "2026-06-20", True)
+        after_normal = next(
+            item for item in app.load_state("2026-06-20")["tasks"] if item["id"] == task["id"]
+        )
+        self.assertEqual(after_normal["next_due"], "2026-06-23")
+
+        app.toggle_task(task["id"], "2026-06-21", True, restart_cycle=True)
+        after_early = next(
+            item for item in app.load_state("2026-06-21")["tasks"] if item["id"] == task["id"]
+        )
+        self.assertEqual(after_early["next_due"], "2026-06-24")
+
     def test_daily_and_abyss_groups_support_tasks(self):
         account = create_test_account({"name": "分组测试号"})
         app.set_account_task_tag(account["id"], {"tag": "质变仪", "enabled": True})

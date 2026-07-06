@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.3"
+APP_VERSION = "2.2.4"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -949,6 +949,16 @@ def load_state(selected_date: str) -> dict:
                 due_tasks.append(task)
         elif recurrence == "interval":
             precise_due = exact_due_moment(task["next_due"]) if task["name"] in ("质变仪", "探索派遣") else None
+            if (
+                task["name"] == "壶"
+                and task["next_due"]
+                and "T" not in task["next_due"]
+                and not task["completed"]
+            ):
+                _pot_day = date.fromisoformat(task["next_due"])
+                _pot_due = datetime(_pot_day.year, _pot_day.month, _pot_day.day, 4, 0)
+                if _pot_due > datetime.now():
+                    precise_due = _pot_due
             is_due = bool(
                 task["next_due"]
                 and (
@@ -992,7 +1002,7 @@ def load_state(selected_date: str) -> dict:
     _next_day = game_today() + timedelta(days=1)
     end_of_game_today = datetime(_next_day.year, _next_day.month, _next_day.day, 4, 0)
     def _long_cooling(task):
-        return not task["completed"] and task.get("available_at") and datetime.fromisoformat(task["available_at"]) > end_of_game_today
+        return not task["completed"] and task.get("available_at") and datetime.fromisoformat(task["available_at"]) >= end_of_game_today
     countable_tasks = [task for task in due_tasks if not _long_cooling(task)]
     completed_count = sum(1 for task in countable_tasks if task["completed"])
     daily_tasks = [task for task in countable_tasks if task["name"] in DAILY_CATEGORY_TASKS]
@@ -1678,7 +1688,7 @@ def set_task_notes(task_id: int, payload: dict) -> None:
         )
 
 
-def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, connection=None) -> None:
+def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, connection=None, restart_cycle=False) -> None:
     parsed_task_date = date.fromisoformat(task_date)
     with (db_connection() if connection is None else nullcontext(connection)) as connection:
         task = connection.execute(
@@ -1730,8 +1740,11 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
                 else:
                     if not task["interval_days"]:
                         raise ValueError("任务冷却天数未配置，请检查任务设置")
-                    prev_date = date.fromisoformat(previous_due) if previous_due else date.fromisoformat(task_date)
-                    base_date = max(prev_date, date.fromisoformat(task_date))
+                    if restart_cycle:
+                        base_date = date.fromisoformat(task_date)
+                    else:
+                        prev_date = date.fromisoformat(previous_due) if previous_due else date.fromisoformat(task_date)
+                        base_date = max(prev_date, date.fromisoformat(task_date))
                     next_due_text = (base_date + timedelta(days=task["interval_days"])).isoformat()
                 connection.execute(
                     "UPDATE tasks SET next_due = ? WHERE id = ?",
@@ -1948,6 +1961,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 require_text(payload, "date", 10),
                 bool(payload.get("completed")),
                 payload.get("usedAt"),
+                restart_cycle=bool(payload.get("restartCycle")),
             )
             self.send_json(None)
             return
