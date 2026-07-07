@@ -543,6 +543,7 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
       let dueText = "";
       if ((task.name === "质变仪" || task.name === "探索派遣") && task.available_at && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta cooldown-remaining" data-available-at="${escapeHtml(task.available_at)}">还剩 ${escapeHtml(formatCountdown(task.cooldown_remaining_seconds))}</small>`;
       else if (task.name === "壶" && !task.completed && task.next_due && task.cooldown_remaining_seconds > 0) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
+      else if (task.name === "狗粮" && task.prev_day_completed_at) dueText = `<small class="schedule-meta">昨天狗粮采集时间 ${escapeHtml(String(task.prev_day_completed_at).slice(11, 16))}</small>`;
       else if (task.name === "壶" && task.completed && task.next_due) dueText = `<small class="schedule-meta">下次收取 ${escapeHtml(task.next_due)}</small>`;
       else if (task.recurrence === "interval" && task.next_due && task.name !== "质变仪" && task.name !== "探索派遣" && task.name !== "壶") dueText = `<small class="schedule-meta">到期 ${escapeHtml(task.next_due)}</small>`;
       if (task.recurrence === "weekly" && task.event_end && task.completed) dueText = `<small class="schedule-meta">下次刷新 ${escapeHtml(task.event_end)} ${escapeHtml(task.event_end_time)}</small>`;

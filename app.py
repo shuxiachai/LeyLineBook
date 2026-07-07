@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -918,6 +918,17 @@ def load_state(selected_date: str) -> dict:
                 (selected_week_key,),
             )
         }
+        prev_day_food_times = {
+            row[0]: row[1]
+            for row in connection.execute(
+                """
+                SELECT r.task_id, r.completed_at FROM task_records r
+                JOIN tasks t ON t.id = r.task_id
+                WHERE t.name = '狗粮' AND r.task_date = ? AND r.note = ''
+                """,
+                ((selected_day - timedelta(days=1)).isoformat(),),
+            )
+        }
         completed_monthly_task_ids = {
             row[0]
             for row in connection.execute(
@@ -937,6 +948,8 @@ def load_state(selected_date: str) -> dict:
         recurrence = task["recurrence"]
         all_tasks.append(task)
         if recurrence == "daily":
+            if task["name"] == "狗粮" and task["id"] in prev_day_food_times:
+                task["prev_day_completed_at"] = prev_day_food_times[task["id"]]
             due_tasks.append(task)
         elif recurrence == "weekly":
             week_done = task["id"] in completed_weekly_task_dates

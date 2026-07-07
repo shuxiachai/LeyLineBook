@@ -599,6 +599,31 @@ class TaskRecorderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             app.reorder_accounts({"accountIds": [reversed_ids[0], reversed_ids[0]]})
 
+    def test_food_task_exposes_previous_day_completion_time(self):
+        account = create_test_account({"name": "狗粮时间测试号"})
+        app.set_account_task_tag(account["id"], {"tag": "狗粮", "enabled": True})
+        task = next(
+            item for item in app.load_state("2026-06-20")["dueTasks"]
+            if item["account_id"] == account["id"] and item["name"] == "狗粮"
+        )
+        self.assertNotIn("prev_day_completed_at", task)
+
+        app.toggle_task(task["id"], "2026-06-20", True)
+        next_day = next(
+            item for item in app.load_state("2026-06-21")["dueTasks"] if item["id"] == task["id"]
+        )
+        with app.db_connection() as connection:
+            recorded = connection.execute(
+                "SELECT completed_at FROM task_records WHERE task_id = ? AND task_date = '2026-06-20'",
+                (task["id"],),
+            ).fetchone()[0]
+        self.assertEqual(next_day["prev_day_completed_at"], recorded)
+
+        two_days_later = next(
+            item for item in app.load_state("2026-06-22")["dueTasks"] if item["id"] == task["id"]
+        )
+        self.assertNotIn("prev_day_completed_at", two_days_later)
+
     def test_teapot_early_collect_restarts_cycle(self):
         account = create_test_account({"name": "壶提前收取测试号"})
         app.set_account_task_tag(account["id"], {"tag": "壶", "enabled": True})
