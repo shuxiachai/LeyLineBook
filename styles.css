@@ -374,6 +374,15 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .resin-quick-btn { padding: 5px 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
 .resin-quick-btn:hover { border-color: var(--hover-border); color: var(--ink); }
 .resin-preview { text-align: center; color: var(--muted); font-size: 12px; margin: 6px 0 0; min-height: 16px; }
+.toolbar-btn-group { display: flex; gap: 8px; align-items: center; }
+.care-plan-dialog form { min-width: 380px; }
+.care-plan-list { display: grid; gap: 8px; margin-bottom: 4px; }
+.care-plan-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.care-plan-info { display: grid; gap: 2px; min-width: 0; }
+.care-plan-info strong { font-size: 14px; }
+.care-plan-info small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.care-plan-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.care-plan-actions .button { padding: 4px 10px; font-size: 12px; }
 .activity-enable-all { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
 .task-chip .task-note-expedition { color: var(--muted); }
 .compact .task-group { padding: 13px 16px; }

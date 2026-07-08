@@ -982,6 +982,9 @@ function openTaskNoteDialog(task) {
   state.editingTaskName = task.name;
   state.editingTaskIsNew = !task.id;
   state.editingTaskNotes = new Set(parseTaskNotes(task.notes));
+  if (task.name === "探索派遣" && ![...state.editingTaskNotes].some((note) => note.startsWith(EXPEDITION_PREFIX))) {
+    state.editingTaskNotes.add(EXPEDITION_PREFIX + "20小时");
+  }
   document.querySelector("#taskNoteDialogTitle").textContent = `${task.name} · 任务设置`;
   document.querySelector("#removeConfiguredTask").classList.toggle("hidden", state.editingTaskIsNew);
   document.querySelector("#customTaskNote").value = "";
@@ -1214,6 +1217,12 @@ function openAccountDialog(account = null) {
   updateProxyDaysLeft();
   const isNew = !account;
   document.querySelector("#accountCredentialsSection").classList.toggle("hidden", !isNew);
+  const plans = state.data?.carePlans || [];
+  const planField = document.querySelector("#accountPlanField");
+  planField.classList.toggle("hidden", !(isNew && plans.length > 0));
+  const planSelect = document.querySelector("#accountPlan");
+  planSelect.innerHTML = '<option value="">不使用</option>' + plans.map((plan) => `<option value="${plan.id}">${escapeHtml(plan.name)}</option>`).join("");
+  planSelect.value = "";
   if (isNew) {
     document.querySelector("#accountCredUsername").value = "";
     document.querySelector("#accountCredPassword").value = "";
@@ -1222,6 +1231,66 @@ function openAccountDialog(account = null) {
     document.querySelector("#accountCredNote").value = "";
   }
   document.querySelector("#accountDialog").showModal();
+}
+
+const carePlanTaskDefinitions = [...dailyTaskTagDefinitions, ...abyssTaskTagDefinitions];
+const carePlanActivityDefinitions = [
+  { name: "大活动", label: "大活动" },
+  { name: "小活动", label: "小活动" },
+];
+
+function renderCarePlanEditor() {
+  const renderPlanTags = (definitions) => definitions.map((def) => {
+    const active = state.editingCarePlanTasks.has(def.name);
+    return `<button type="button" class="config-tag ${active ? "active" : ""}" data-plan-task="${escapeHtml(def.name)}" aria-pressed="${active}">${active ? "✓ " : "+ "}${escapeHtml(def.label)}</button>`;
+  }).join("");
+  document.querySelector("#carePlanTasks").innerHTML = renderPlanTags(carePlanTaskDefinitions);
+  document.querySelector("#carePlanActivities").innerHTML = renderPlanTags(carePlanActivityDefinitions);
+}
+
+function renderCarePlanList() {
+  const plans = state.data?.carePlans || [];
+  document.querySelector("#carePlanList").innerHTML = plans.length
+    ? plans.map((plan) => `<div class="care-plan-item"><div class="care-plan-info"><strong>${escapeHtml(plan.name)}</strong><small>${plan.tasks.map((t) => escapeHtml(t)).join("、")}</small></div><div class="care-plan-actions"><button type="button" class="button ghost" data-edit-plan="${plan.id}">编辑</button><button type="button" class="icon-button danger" data-delete-plan="${plan.id}" aria-label="删除方案">✕</button></div></div>`).join("")
+    : '<div class="empty-state">还没有方案，在下方新建一个。</div>';
+}
+
+function resetCarePlanEditor() {
+  state.editingCarePlanTasks = new Set();
+  document.querySelector("#carePlanId").value = "";
+  document.querySelector("#carePlanName").value = "";
+  document.querySelector("#carePlanEditorTitle").textContent = "新建方案";
+  document.querySelector("#carePlanCancelEdit").classList.add("hidden");
+  renderCarePlanEditor();
+}
+
+function openCarePlanDialog() {
+  resetCarePlanEditor();
+  renderCarePlanList();
+  document.querySelector("#carePlanDialog").showModal();
+}
+
+async function saveCarePlan(event) {
+  event.preventDefault();
+  const id = document.querySelector("#carePlanId").value;
+  const name = document.querySelector("#carePlanName").value.trim();
+  const tasks = [...state.editingCarePlanTasks];
+  if (!name) {
+    showToast("请填写方案名称");
+    return;
+  }
+  if (!tasks.length) {
+    showToast("请至少勾选一个任务");
+    return;
+  }
+  await api(id ? `/api/care-plans/${id}` : "/api/care-plans", {
+    method: id ? "PUT" : "POST",
+    body: JSON.stringify({ name, tasks }),
+  });
+  await loadState();
+  renderCarePlanList();
+  resetCarePlanEditor();
+  showToast(id ? "方案已更新" : "方案已创建");
 }
 
 function updateScheduleFields() {
@@ -1261,6 +1330,9 @@ async function saveAccount(event) {
     proxyUntil: document.querySelector("#accountProxyUntil").value,
     notes: document.querySelector("#accountNotes").value,
   };
+  if (!id && document.querySelector("#accountPlan").value) {
+    payload.planId = Number(document.querySelector("#accountPlan").value);
+  }
   const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
   if (!id) {
     const credUsername = document.querySelector("#accountCredUsername").value.trim();
@@ -1319,7 +1391,9 @@ async function handleAction(target) {
   const noteChoice = target.closest("[data-task-note-choice]")?.dataset.taskNoteChoice;
   if (noteChoice) {
     if (state.editingTaskNotes.has(noteChoice)) {
-      state.editingTaskNotes.delete(noteChoice);
+      if (!noteChoice.startsWith(EXPEDITION_PREFIX)) {
+        state.editingTaskNotes.delete(noteChoice);
+      }
     } else {
       if (noteChoice.startsWith(EXPEDITION_PREFIX)) {
         for (const note of [...state.editingTaskNotes]) {
@@ -1498,6 +1572,41 @@ async function handleAction(target) {
     await api(`/api/custom-tags/${removeCustomTagId}`, { method: "DELETE", body: "{}" });
     await loadState();
     showToast("自定义任务已删除");
+    return;
+  }
+  const planTask = target.closest("[data-plan-task]")?.dataset.planTask;
+  if (planTask) {
+    if (state.editingCarePlanTasks.has(planTask)) state.editingCarePlanTasks.delete(planTask);
+    else state.editingCarePlanTasks.add(planTask);
+    renderCarePlanEditor();
+    return;
+  }
+  const editPlanId = target.closest("[data-edit-plan]")?.dataset.editPlan;
+  if (editPlanId) {
+    const plan = (state.data.carePlans || []).find((item) => item.id === Number(editPlanId));
+    if (!plan) return;
+    state.editingCarePlanTasks = new Set(plan.tasks);
+    document.querySelector("#carePlanId").value = plan.id;
+    document.querySelector("#carePlanName").value = plan.name;
+    document.querySelector("#carePlanEditorTitle").textContent = `编辑方案「${plan.name}」`;
+    document.querySelector("#carePlanCancelEdit").classList.remove("hidden");
+    renderCarePlanEditor();
+    return;
+  }
+  const deletePlanId = target.closest("[data-delete-plan]")?.dataset.deletePlan;
+  if (deletePlanId) {
+    const plan = (state.data.carePlans || []).find((item) => item.id === Number(deletePlanId));
+    const confirmed = await confirmAction({
+      title: `删除方案「${plan?.name || ""}」？`,
+      message: "删除后不影响任何已创建的号主。",
+      confirmText: "确认删除",
+    });
+    if (!confirmed) return;
+    await api(`/api/care-plans/${deletePlanId}`, { method: "DELETE", body: "{}" });
+    await loadState();
+    renderCarePlanList();
+    if (document.querySelector("#carePlanId").value === deletePlanId) resetCarePlanEditor();
+    showToast("方案已删除");
     return;
   }
   const enableAllTagId = target.closest("[data-enable-all-tag]")?.dataset.enableAllTag;
@@ -1799,6 +1908,9 @@ function bindEvents() {
     showToast("当天待办已全部完成");
   });
   document.querySelector("#addAccount").addEventListener("click", () => openAccountDialog());
+  document.querySelector("#managePlans").addEventListener("click", openCarePlanDialog);
+  document.querySelector("#carePlanForm").addEventListener("submit", (event) => saveCarePlan(event).catch((error) => showToast(error.message)));
+  document.querySelector("#carePlanCancelEdit").addEventListener("click", resetCarePlanEditor);
   document.querySelectorAll("[data-story-type]").forEach((button) => {
     button.addEventListener("click", () => {
       state.selectedStoryType = button.dataset.storyType;

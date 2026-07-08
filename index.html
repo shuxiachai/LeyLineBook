@@ -99,7 +99,10 @@
       <section class="view" id="view-accounts">
         <div class="section-toolbar">
           <div><h2>号主与委托</h2><p>维护号主，并为每个号主配置需要记录的任务</p></div>
-          <button class="button primary" id="addAccount">新增号主</button>
+          <div class="toolbar-btn-group">
+            <button class="button ghost" id="managePlans">托管方案</button>
+            <button class="button primary" id="addAccount">新增号主</button>
+          </div>
         </div>
         <div id="accountCards" class="account-grid"></div>
       </section>
@@ -202,6 +205,14 @@
                 <li><strong>截止日期</strong>（必填）：代打服务的到期日期。若非代打可填写一个远期日期，临近到期时号主名称旁会出现提醒标记</li>
                 <li><strong>备注</strong>（可选）：自由填写的额外说明</li>
                 <li><strong>账号凭据</strong>（可选）：可在新增时一并填写账号密码，也可后续通过 <span class="ui-ref">密</span> 按钮添加</li>
+              </ul>
+              <h3>托管方案</h3>
+              <p>如果经常按同一套任务组合创建号主（如"普托""精托"），可点击页面右上角的 <span class="ui-ref">托管方案</span> 按钮预先建好方案：起一个自定义名称并勾选包含的任务。之后在新增号主时选择方案，任务将自动配置，无需逐个点选。</p>
+              <ul>
+                <li>方案只包含任务开关，不包含周本、好感队、派遣时长等备注类配置，这些创建后按号主单独设置</li>
+                <li>方案可勾选「大活动」「小活动」开关：创建号主时自动启用当时已存在的对应类型活动，之后新添加的活动仍需手动或通过「全部启用」开启</li>
+                <li>方案<strong>仅在创建号主时生效</strong>：创建后号主任务随意调整，与方案无关；修改或删除方案也不影响任何已创建的号主</li>
+                <li>方案数量不限，可随时编辑和删除</li>
               </ul>
               <h3>任务配置</h3>
               <p>每个号主卡片分三个区域：</p>
@@ -509,6 +520,10 @@
         </div>
       </label>
       <label>备注<textarea id="accountNotes" maxlength="500" rows="3" placeholder="可选"></textarea></label>
+      <label id="accountPlanField" class="hidden">托管方案
+        <select id="accountPlan"><option value="">不使用</option></select>
+        <small class="form-hint">按所选方案自动启用任务，仅创建时生效，之后可随时调整</small>
+      </label>
       <div id="accountCredentialsSection">
         <div class="cred-section-divider">账号凭据（可选）</div>
         <label>账号名称<input id="accountCredUsername" maxlength="200" placeholder="游戏账号名称" autocomplete="username"></label>
@@ -632,6 +647,35 @@
       <div class="dialog-actions">
         <button type="button" class="button ghost" data-close-dialog="expeditionUsageDialog">取消</button>
         <button type="submit" class="button primary">确认完成</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="carePlanDialog" class="care-plan-dialog">
+    <form method="dialog" id="carePlanForm">
+      <div class="dialog-head">
+        <div><p class="eyebrow">建号快捷配置</p><h2>托管方案</h2></div>
+        <button type="button" class="icon-button" data-close-dialog="carePlanDialog" aria-label="关闭">×</button>
+      </div>
+      <p class="note-dialog-hint">方案只在创建号主时生效，创建后号主任务与方案互不影响。方案名称自定（如：普托、精托）。</p>
+      <div class="care-plan-list" id="carePlanList"></div>
+      <div class="cred-section-divider" id="carePlanEditorTitle">新建方案</div>
+      <input type="hidden" id="carePlanId">
+      <label>方案名称<input id="carePlanName" maxlength="20" placeholder="例如：普托"></label>
+      <div class="note-editor-section">
+        <strong>包含任务</strong>
+        <div class="tag-list" id="carePlanTasks"></div>
+      </div>
+      <div class="note-editor-section">
+        <strong>包含活动</strong>
+        <div class="tag-list" id="carePlanActivities"></div>
+        <small class="form-hint">勾选后，创建号主时会自动启用当时已存在的对应类型活动；之后新添加的活动仍需手动或「全部启用」开启。</small>
+      </div>
+      <div class="dialog-actions split-actions">
+        <button type="button" class="button ghost hidden" id="carePlanCancelEdit">放弃编辑</button>
+        <span></span>
+        <button type="button" class="button ghost" data-close-dialog="carePlanDialog">关闭</button>
+        <button type="submit" class="button primary" id="carePlanSaveBtn">保存方案</button>
       </div>
     </form>
   </dialog>
