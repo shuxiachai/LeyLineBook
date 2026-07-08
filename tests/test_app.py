@@ -599,6 +599,57 @@ class TaskRecorderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             app.reorder_accounts({"accountIds": [reversed_ids[0], reversed_ids[0]]})
 
+    def test_care_plan_applies_tasks_on_account_creation_then_decouples(self):
+        plan = app.create_care_plan({"name": "普托", "tasks": ["体力", "狗粮", "壶"]})
+        self.assertEqual(plan["tasks"], ["体力", "狗粮", "壶"])
+
+        account = app.create_account(
+            {"name": "方案测试号", "proxyUntil": "2099-12-31", "planId": plan["id"]}
+        )
+        tasks = [
+            task for task in app.load_state(date.today().isoformat())["tasks"]
+            if task["account_id"] == account["id"]
+        ]
+        self.assertEqual({task["name"] for task in tasks}, {"体力", "狗粮", "壶"})
+        teapot = next(task for task in tasks if task["name"] == "壶")
+        self.assertEqual((teapot["recurrence"], teapot["interval_days"]), ("interval", 3))
+
+        app.update_care_plan(plan["id"], {"name": "精托", "tasks": ["体力"]})
+        app.delete_care_plan(plan["id"])
+        tasks_after = [
+            task for task in app.load_state(date.today().isoformat())["tasks"]
+            if task["account_id"] == account["id"]
+        ]
+        self.assertEqual({task["name"] for task in tasks_after}, {"体力", "狗粮", "壶"})
+
+    def test_care_plan_rejects_invalid_tasks(self):
+        with self.assertRaisesRegex(ValueError, "无效任务"):
+            app.create_care_plan({"name": "坏方案", "tasks": ["体力", "不存在的任务"]})
+        with self.assertRaisesRegex(ValueError, "至少"):
+            app.create_care_plan({"name": "空方案", "tasks": []})
+
+    def test_care_plan_activity_switch_enables_current_activities(self):
+        big = app.create_custom_tag(
+            {"name": "方案活动A", "category": "大活动", "durationDays": 16,
+             "startDate": date.today().isoformat()}
+        )
+        app.create_custom_tag(
+            {"name": "方案活动B", "category": "小活动", "durationDays": 7,
+             "startDate": date.today().isoformat()}
+        )
+        plan = app.create_care_plan({"name": "活动托", "tasks": ["体力", "大活动"]})
+        account = app.create_account(
+            {"name": "活动方案号", "proxyUntil": "2099-12-31", "planId": plan["id"]}
+        )
+        tasks = [
+            task for task in app.load_state(date.today().isoformat())["tasks"]
+            if task["account_id"] == account["id"]
+        ]
+        names = {task["name"] for task in tasks}
+        self.assertEqual(names, {"体力", "方案活动A"})
+        activity_task = next(task for task in tasks if task["name"] == "方案活动A")
+        self.assertEqual(activity_task["custom_tag_id"], big["id"])
+
     def test_food_task_exposes_previous_day_completion_time(self):
         account = create_test_account({"name": "狗粮时间测试号"})
         app.set_account_task_tag(account["id"], {"tag": "狗粮", "enabled": True})

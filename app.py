@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.2.5"
+APP_VERSION = "2.3.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -295,6 +295,13 @@ def initialize_database() -> None:
                 category TEXT NOT NULL DEFAULT '大活动',
                 duration_days INTEGER NOT NULL DEFAULT 16,
                 start_date TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS care_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                tasks TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
@@ -1027,6 +1034,7 @@ def load_state(selected_date: str) -> dict:
         "dueTasks": due_tasks,
         "accountNotes": account_notes,
         "customTags": custom_tags,
+        "carePlans": list_care_plans(),
         "storyTasks": list_story_tasks(),
         "settings": settings,
         "summary": {
@@ -1072,6 +1080,67 @@ def _parse_proxy_until(payload: dict) -> str | None:
         raise ValueError("截止日期格式无效")
 
 
+CARE_PLAN_ACTIVITY_CATEGORIES = ("大活动", "小活动")
+
+
+def _parse_care_plan_tasks(payload: dict) -> str:
+    raw_tasks = payload.get("tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise ValueError("方案至少需要勾选一个任务")
+    tasks = []
+    for value in raw_tasks:
+        task_name = str(value).strip()
+        if task_name not in TASK_TAG_PRESETS and task_name not in CARE_PLAN_ACTIVITY_CATEGORIES:
+            raise ValueError(f"方案中包含无效任务：{task_name}")
+        if task_name not in tasks:
+            tasks.append(task_name)
+    return json.dumps(tasks, ensure_ascii=False)
+
+
+def list_care_plans() -> list[dict]:
+    with db_connection() as connection:
+        plans = []
+        for row in connection.execute("SELECT * FROM care_plans ORDER BY id"):
+            plan = row_to_dict(row)
+            plan["tasks"] = json.loads(plan["tasks"])
+            plans.append(plan)
+        return plans
+
+
+def create_care_plan(payload: dict) -> dict:
+    name = require_text(payload, "name", 20)
+    tasks_json = _parse_care_plan_tasks(payload)
+    with db_connection() as connection:
+        cursor = connection.execute(
+            "INSERT INTO care_plans(name, tasks, created_at) VALUES(?, ?, ?)",
+            (name, tasks_json, now_text()),
+        )
+        plan = row_to_dict(
+            connection.execute("SELECT * FROM care_plans WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        )
+        plan["tasks"] = json.loads(plan["tasks"])
+        return plan
+
+
+def update_care_plan(plan_id: int, payload: dict) -> None:
+    name = require_text(payload, "name", 20)
+    tasks_json = _parse_care_plan_tasks(payload)
+    with db_connection() as connection:
+        cursor = connection.execute(
+            "UPDATE care_plans SET name = ?, tasks = ? WHERE id = ?",
+            (name, tasks_json, plan_id),
+        )
+        if cursor.rowcount == 0:
+            raise LookupError("没有找到该托管方案")
+
+
+def delete_care_plan(plan_id: int) -> None:
+    with db_connection() as connection:
+        cursor = connection.execute("DELETE FROM care_plans WHERE id = ?", (plan_id,))
+        if cursor.rowcount == 0:
+            raise LookupError("没有找到该托管方案")
+
+
 def create_account(payload: dict) -> dict:
     name = require_text(payload, "name")
     owner = str(payload.get("owner", "")).strip()[:100]
@@ -1092,6 +1161,34 @@ def create_account(payload: dict) -> dict:
                 """,
                 (account_id, str(payload["dailyTask"])[:100], now_text()),
             )
+        if payload.get("planId"):
+            try:
+                plan_id = int(payload["planId"])
+            except (TypeError, ValueError) as error:
+                raise ValueError("托管方案选择无效") from error
+            plan = connection.execute(
+                "SELECT tasks FROM care_plans WHERE id = ?", (plan_id,)
+            ).fetchone()
+            if not plan:
+                raise ValueError("托管方案不存在，请刷新后重试")
+            for task_name in json.loads(plan["tasks"]):
+                if task_name in TASK_TAG_PRESETS:
+                    _insert_preset_task(connection, account_id, task_name)
+                elif task_name in CARE_PLAN_ACTIVITY_CATEGORIES:
+                    for tag in connection.execute(
+                        "SELECT id, name, start_date FROM custom_task_tags WHERE category = ?",
+                        (task_name,),
+                    ).fetchall():
+                        tag_start = date.fromisoformat(tag["start_date"]) if tag["start_date"] else game_today()
+                        connection.execute(
+                            """
+                            INSERT INTO tasks(
+                                account_id, name, recurrence, next_due, sort_order, custom_tag_id, created_at
+                            ) VALUES(?, ?, 'once', ?, ?, ?, ?)
+                            """,
+                            (account_id, tag["name"], tag_start.isoformat(),
+                             _ACTIVITY_TASK_SORT_ORDER, tag["id"], now_text()),
+                        )
         result = row_to_dict(
             connection.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
         )
@@ -1189,6 +1286,7 @@ def reset_database() -> None:
             DELETE FROM account_group_notes;
             DELETE FROM story_tasks;
             DELETE FROM custom_task_tags;
+            DELETE FROM care_plans;
             DELETE FROM accounts;
             DELETE FROM app_meta;
         """)
@@ -1208,6 +1306,7 @@ def build_backup_payload() -> dict:
             "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
             "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
             "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
+            "carePlans": [row_to_dict(row) for row in connection.execute("SELECT * FROM care_plans")],
             "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
         }
 
@@ -1231,13 +1330,18 @@ def import_backup(payload: dict) -> None:
     with db_connection() as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
         for table in ("task_records", "tasks", "account_group_notes",
-                      "story_tasks", "custom_task_tags", "accounts"):
+                      "story_tasks", "custom_task_tags", "care_plans", "accounts"):
             connection.execute(f"DELETE FROM {table}")
         for row in payload.get("customTags", []):
             connection.execute(
                 "INSERT OR IGNORE INTO custom_task_tags(id,name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?,?)",
                 (row.get("id"), row.get("name"), row.get("category", "大活动"),
                  row.get("duration_days", 16), row.get("start_date"), row.get("created_at", now_text())),
+            )
+        for row in payload.get("carePlans", []):
+            connection.execute(
+                "INSERT OR IGNORE INTO care_plans(id,name,tasks,created_at) VALUES(?,?,?,?)",
+                (row.get("id"), row.get("name"), row.get("tasks", "[]"), row.get("created_at", now_text())),
             )
         for row in payload.get("accounts", []):
             connection.execute(
@@ -1645,31 +1749,36 @@ def set_account_task_tag(account_id: int, payload: dict) -> None:
                 )
             return
 
-        recurrence = preset["recurrence"]
-        interval_days = preset.get("interval_days")
-        monthly_day = preset.get("monthly_day")
-        next_due = None
-        if recurrence == "interval":
-            next_due = game_today().isoformat()
-        elif recurrence == "monthly":
-            next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
-        elif recurrence == "version":
-            version_anchor = get_version_anchor(connection)
-            window = version_window(version_anchor)
-            next_due = window["eventStart"] if window else None
+        _insert_preset_task(connection, account_id, task_name, notes)
 
-        preset_order = _TASK_SORT_ORDER.get(task_name, 0)
-        connection.execute(
-            """
-            INSERT INTO tasks(
-                account_id, name, recurrence, interval_days, monthly_day, next_due, notes, sort_order, created_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                account_id, task_name, recurrence, interval_days, monthly_day,
-                next_due, notes or "", preset_order, now_text(),
-            ),
-        )
+
+def _insert_preset_task(connection: sqlite3.Connection, account_id: int, task_name: str, notes: str | None = None) -> None:
+    preset = TASK_TAG_PRESETS[task_name]
+    recurrence = preset["recurrence"]
+    interval_days = preset.get("interval_days")
+    monthly_day = preset.get("monthly_day")
+    next_due = None
+    if recurrence == "interval":
+        next_due = game_today().isoformat()
+    elif recurrence == "monthly":
+        next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
+    elif recurrence == "version":
+        version_anchor = get_version_anchor(connection)
+        window = version_window(version_anchor)
+        next_due = window["eventStart"] if window else None
+
+    preset_order = _TASK_SORT_ORDER.get(task_name, 0)
+    connection.execute(
+        """
+        INSERT INTO tasks(
+            account_id, name, recurrence, interval_days, monthly_day, next_due, notes, sort_order, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id, task_name, recurrence, interval_days, monthly_day,
+            next_due, notes or "", preset_order, now_text(),
+        ),
+    )
 
 
 def normalize_task_notes(raw_notes) -> str:
@@ -2018,6 +2127,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/custom-tags/(\d+)/enable-all", path)
         if match and method == "POST":
             self.send_json({"enabled": enable_custom_tag_for_all(int(match.group(1)))})
+            return
+        if method == "POST" and path == "/api/care-plans":
+            self.send_json(create_care_plan(payload), HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/care-plans/(\d+)", path)
+        if match and method == "PUT":
+            update_care_plan(int(match.group(1)), payload)
+            self.send_json(None)
+            return
+        if match and method == "DELETE":
+            delete_care_plan(int(match.group(1)))
+            self.send_json(None)
             return
         if method == "POST" and path == "/api/update/apply":
             start_update()
