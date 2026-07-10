@@ -6,7 +6,10 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('static', 'static')],
-    hiddenimports=[],
+    hiddenimports=[
+        'webview.platforms.edgechromium',
+        'webview.platforms.winforms',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -1019,5 +1019,111 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertEqual(result["downloadUrl"], "right")
 
 
+class SecurityTest(unittest.TestCase):
+    def _make_handler(self, headers, path="/", port=8765):
+        handler = app.RequestHandler.__new__(app.RequestHandler)
+        handler.headers = headers
+        handler.path = path
+        handler.sent_errors = []
+        handler.api_called = False
+        handler.static_args = []
+
+        class _Srv:
+            server_address = ("127.0.0.1", port)
+
+        handler.server = _Srv()
+        handler.send_error = lambda code, *a, **k: handler.sent_errors.append(code)
+        handler.handle_api = lambda *a, **k: setattr(handler, "api_called", True)
+        handler.serve_static = lambda p: handler.static_args.append(p)
+        return handler
+
+    def test_foreign_host_header_is_rejected(self):
+        handler = self._make_handler({"Host": "attacker.example.com"}, path="/")
+        handler.dispatch("GET")
+        self.assertIn(app.HTTPStatus.FORBIDDEN, handler.sent_errors)
+        self.assertEqual(handler.static_args, [])
+
+    def test_localhost_host_header_is_accepted(self):
+        for host in ("127.0.0.1:8765", "localhost:8765"):
+            handler = self._make_handler({"Host": host}, path="/")
+            handler.dispatch("GET")
+            self.assertEqual(handler.sent_errors, [])
+            self.assertEqual(handler.static_args, ["/"])
+
+    def test_cross_origin_write_is_rejected(self):
+        handler = self._make_handler(
+            {"Host": "127.0.0.1:8765", "Origin": "http://evil.example.com"},
+            path="/api/reset",
+        )
+        handler.dispatch("POST")
+        self.assertIn(app.HTTPStatus.FORBIDDEN, handler.sent_errors)
+        self.assertFalse(handler.api_called)
+
+    def test_same_origin_write_is_allowed(self):
+        handler = self._make_handler(
+            {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"},
+            path="/api/care-plans",
+        )
+        handler.read_json = lambda: {}
+        handler.dispatch("POST")
+        self.assertEqual(handler.sent_errors, [])
+        self.assertTrue(handler.api_called)
+
+    def test_static_path_traversal_is_blocked(self):
+        handler = self._make_handler({"Host": "127.0.0.1:8765"})
+        handler.serve_static = app.RequestHandler.serve_static.__get__(handler)
+        app.RequestHandler.serve_static(handler, "/../app.py")
+        self.assertIn(app.HTTPStatus.FORBIDDEN, handler.sent_errors)
+
+    def test_malicious_version_tag_is_rejected(self):
+        class FakeResponse:
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return json.dumps({"tag_name": "v1.0.0 && calc", "assets": []}).encode()
+
+        with patch.object(app.urllib.request, "urlopen", return_value=FakeResponse()):
+            with self.assertRaisesRegex(ValueError, "非法版本号"):
+                app.check_for_update()
+
+    def test_update_not_offered_for_same_or_older_version(self):
+        def make_response(tag):
+            class FakeResponse:
+                headers = {}
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self):
+                    return json.dumps({"tag_name": tag, "assets": []}).encode()
+
+            return FakeResponse()
+
+        with patch.object(app, "APP_VERSION", "3.0.0"):
+            with patch.object(app.urllib.request, "urlopen", return_value=make_response("v3.0.0")):
+                self.assertFalse(app.check_for_update()["hasUpdate"])
+            with patch.object(app.urllib.request, "urlopen", return_value=make_response("v2.9.9")):
+                self.assertFalse(app.check_for_update()["hasUpdate"])
+
+    def test_update_download_url_host_is_whitelisted(self):
+        app._latest_release = {
+            "downloadUrl": "https://evil.example.com/LeyLineBook.exe",
+            "latest": "9.9.9",
+        }
+        with patch.object(app.sys, "frozen", True, create=True):
+            with self.assertRaisesRegex(ValueError, "非法下载地址"):
+                app.start_update()
+        app._latest_release = None
+
+
 if __name__ == "__main__":
     unittest.main()

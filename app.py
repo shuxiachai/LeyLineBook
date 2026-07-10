@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "2.3.0"
+APP_VERSION = "3.0.0"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -2210,24 +2210,63 @@ def heartbeat_watchdog() -> None:
             os._exit(0)
 
 
-def run_server(port: int, open_browser: bool) -> None:
+def _webview_storage_path() -> str:
+    path = DATA_DIR / "webview"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def launch_window(url: str) -> bool:
+    """在原生窗口中打开界面；WebView2 不可用时返回 False 以便回退浏览器。"""
+    try:
+        import webview
+    except Exception as error:
+        print(f"原生窗口组件不可用（{error!r}），回退到浏览器模式。", flush=True)
+        return False
+    try:
+        webview.settings["ALLOW_DOWNLOADS"] = True
+        webview.create_window(
+            "LeyLineBook / 地脉簿",
+            url,
+            width=1440,
+            height=920,
+            min_size=(1080, 680),
+        )
+        webview.start(private_mode=False, storage_path=_webview_storage_path())
+        return True
+    except Exception as error:
+        print(f"原生窗口启动失败（{error!r}），回退到浏览器模式。", flush=True)
+        return False
+
+
+def run_server(port: int, mode: str) -> None:
     if sys.stdout is None:
         sys.stdout = LOG_PATH.open("a", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = LOG_PATH.open("a", encoding="utf-8")
-    global _last_heartbeat
     initialize_database()
     server, port = create_http_server(port)
+    url = f"http://127.0.0.1:{port}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"LeyLineBook / 地脉簿已启动：{url}（模式：{mode}）")
+    sys.stdout.flush()
+
+    if mode == "window":
+        if launch_window(url):
+            print("窗口已关闭，程序退出。", flush=True)
+            server.shutdown()
+            server.server_close()
+            return
+        mode = "browser"
+
+    global _last_heartbeat
     _last_heartbeat = time.time()
     threading.Thread(target=heartbeat_watchdog, daemon=True).start()
-    url = f"http://127.0.0.1:{port}"
-    if open_browser:
+    if mode == "browser":
         threading.Timer(0.7, lambda: webbrowser.open(url)).start()
-    print(f"LeyLineBook / 地脉簿已启动：{url}")
-    print("关闭此窗口即可停止程序。")
-    sys.stdout.flush()
     try:
-        server.serve_forever()
+        while True:
+            time.sleep(3600)
     except KeyboardInterrupt:
         pass
     finally:
@@ -2263,8 +2302,15 @@ def stop_running_server(port: int) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LeyLineBook / 地脉簿")
     parser.add_argument("--port", type=int, default=int(os.environ.get("TASK_RECORDER_PORT", "8765")))
-    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--browser", action="store_true", help="使用系统浏览器打开界面（旧模式）")
+    parser.add_argument("--no-browser", action="store_true", help="仅启动后台服务，不打开界面")
     arguments = parser.parse_args()
+    if arguments.no_browser:
+        startup_mode = "headless"
+    elif arguments.browser:
+        startup_mode = "browser"
+    else:
+        startup_mode = "window"
     if is_already_running(arguments.port):
         stop_running_server(arguments.port)
-    run_server(arguments.port, not arguments.no_browser)
+    run_server(arguments.port, startup_mode)

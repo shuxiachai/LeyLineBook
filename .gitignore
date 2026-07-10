@@ -19,3 +19,6 @@ task_recorder.log
 *.log
 
 !demo/task_records.demo.db
+
+webview/
+*.exe
