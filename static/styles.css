@@ -36,6 +36,12 @@
   --note-bg: #f8efd9;
   --note-border: #d8b976;
   --note-text: #7a5b1f;
+  /* 代打到期徽章专用色：独立于全局 warning/danger 变量，不影响按钮和提示条。
+     默认（绿/白等浅色卡片主题）用浅底深字；深色卡片主题在各自块内覆盖为实心块，见文件末尾。 */
+  --proxy-warning-bg: #f5d491;
+  --proxy-warning-text: #5c3900;
+  --proxy-urgent-bg: #f6c5c1;
+  --proxy-urgent-text: #8a241c;
   --warning-bg: #fbefd8;
   --warning-text: #8a641f;
   --danger-bg: #fff7f6;
@@ -85,6 +91,12 @@ body[data-theme="black"] {
   --danger-bg: #2d1d1d;
   --danger-border: #6b3b39;
   --danger-icon-bg: #3b2524;
+  /* 黑色主题是七个主题里唯一卡片背景为深色的，浅底徽章在此糊底，改用实心块 */
+  --proxy-warning-bg: #a3630a;
+  --proxy-warning-text: #ffffff;
+  --proxy-urgent-bg: #c9372c;
+  --proxy-urgent-text: #ffffff;
+  --proxy-text-shadow: 0 1px 1.5px rgba(0,0,0,.45);
   --backdrop: rgba(0,0,0,.72);
   --shadow: 0 14px 38px rgba(0,0,0,.3);
 }
@@ -180,6 +192,12 @@ body[data-theme="rose"] {
   --focus-ring: rgba(173,53,88,.12);
   --hover-border: #c4809a;
   --empty-bg: rgba(253,247,249,.7);
+  /* 玫瑰主题本身就是粉/洋红色系，默认浅粉徽章会糊进页面里，改用色相远离粉色的橙、红实心块 */
+  --proxy-warning-bg: #a35d0c;
+  --proxy-warning-text: #ffffff;
+  --proxy-urgent-bg: #a3241c;
+  --proxy-urgent-text: #ffffff;
+  --proxy-text-shadow: 0 1px 1.5px rgba(0,0,0,.45);
 }
 
 body[data-theme="amber"] {
@@ -199,6 +217,12 @@ body[data-theme="amber"] {
   --focus-ring: rgba(156,106,16,.12);
   --hover-border: #c09840;
   --empty-bg: rgba(252,248,242,.7);
+  /* 琥珀主题本身满屏棕金色，默认浅金徽章会糊进页面里，改用更饱和的橙、红实心块 */
+  --proxy-warning-bg: #b8560f;
+  --proxy-warning-text: #ffffff;
+  --proxy-urgent-bg: #a3241c;
+  --proxy-urgent-text: #ffffff;
+  --proxy-text-shadow: 0 1px 1.5px rgba(0,0,0,.45);
 }
 
 body.character-theme {
@@ -468,8 +492,8 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .proxy-days-left { font-size: 12px; font-weight: 600; color: var(--green-dark); white-space: nowrap; }
 .proxy-badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .proxy-normal { background: var(--green-soft); color: var(--green-dark); }
-.proxy-warning { background: var(--warning-bg); color: var(--warning-text); }
-.proxy-urgent { background: var(--danger-icon-bg); color: var(--danger); border: 1px solid var(--danger-border); padding: 1px 7px; }
+.proxy-warning { background: var(--proxy-warning-bg); color: var(--proxy-warning-text); text-shadow: var(--proxy-text-shadow, none); }
+.proxy-urgent { background: var(--proxy-urgent-bg); color: var(--proxy-urgent-text); text-shadow: var(--proxy-text-shadow, none); }
 .proxy-expired { background: var(--surface-muted); color: var(--muted); text-decoration: line-through; }
 .account-sections { flex: 1; display: flex; align-items: center; gap: 22px; flex-wrap: wrap; min-width: 0; }
 .account-task-group { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; }
