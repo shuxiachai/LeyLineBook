@@ -18,6 +18,9 @@
   --sidebar-muted: #aec5bb;
   --nav-active-bg: rgba(255,255,255,.11);
   --brand-bg: #f0d7a5;
+  /* 导航数字角标：深色侧栏用金色点缀，浅色侧栏主题需单独覆盖 */
+  --nav-badge-bg: #f0d7a5;
+  --nav-badge-text: #27493e;
   --brand-text: #294f42;
   --primary-gradient: linear-gradient(135deg, #225f49, #347b5f);
   --primary-text: #ffffff;
@@ -78,6 +81,7 @@ body[data-theme="black"] {
   --note-text: #ecd494;
   --warning-bg: #332a19;
   --warning-text: #e2c478;
+  --danger: #f0918b;
   --danger-bg: #2d1d1d;
   --danger-border: #6b3b39;
   --danger-icon-bg: #3b2524;
@@ -104,6 +108,9 @@ body[data-theme="white"] {
   --nav-active-bg: #edf0ed;
   --brand-bg: #202622;
   --brand-text: #ffffff;
+  /* 白色主题侧栏为浅色，金色角标会糊在一起，改用深色实底 */
+  --nav-badge-bg: #2f3733;
+  --nav-badge-text: #ffffff;
   --primary-gradient: linear-gradient(135deg, #fdfefd, #dfe4e1);
   --primary-text: #1f2421;
   --primary-muted: #717772;
@@ -267,7 +274,7 @@ button { cursor: pointer; }
 nav { display: grid; gap: 7px; }
 .nav-item { border: 0; color: var(--sidebar-muted); background: transparent; padding: 13px 14px; border-radius: 11px; text-align: left; display: flex; justify-content: space-between; align-items: center; }
 .nav-item:hover, .nav-item.active { color: var(--sidebar-text); background: var(--nav-active-bg); }
-.nav-item b { min-width: 24px; padding: 2px 7px; border-radius: 99px; background: #f0d7a5; color: #27493e; text-align: center; font-size: 12px; }
+.nav-item b { min-width: 24px; padding: 2px 7px; border-radius: 99px; background: var(--nav-badge-bg); color: var(--nav-badge-text); text-align: center; font-size: 12px; }
 .local-note { margin-top: auto; color: var(--sidebar-muted); font-size: 12px; padding: 15px 10px 0; border-top: 1px solid var(--line); }
 
 .future-banner:not(.hidden) { display: flex; align-items: center; gap: 14px; padding: 12px 18px; margin-bottom: 24px; background: color-mix(in srgb, var(--muted) 8%, var(--panel)); border: 1px solid color-mix(in srgb, var(--muted) 22%, transparent); border-radius: 10px; font-size: .875rem; color: var(--ink); }
@@ -461,9 +468,9 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .proxy-days-left { font-size: 12px; font-weight: 600; color: var(--green-dark); white-space: nowrap; }
 .proxy-badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .proxy-normal { background: var(--green-soft); color: var(--green-dark); }
-.proxy-warning { background: #fef3cd; color: #7a5800; }
-.proxy-urgent { background: #fde8e8; color: #a5423d; }
-.proxy-expired { background: #f0f0f0; color: var(--muted); text-decoration: line-through; }
+.proxy-warning { background: var(--warning-bg); color: var(--warning-text); }
+.proxy-urgent { background: var(--danger-icon-bg); color: var(--danger); border: 1px solid var(--danger-border); padding: 1px 7px; }
+.proxy-expired { background: var(--surface-muted); color: var(--muted); text-decoration: line-through; }
 .account-sections { flex: 1; display: flex; align-items: center; gap: 22px; flex-wrap: wrap; min-width: 0; }
 .account-task-group { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; }
 .account-task-group-label { color: var(--green-dark); font-size: 19px; font-weight: 800; }
@@ -472,8 +479,8 @@ body[data-theme="white"] .summary-card.primary { border: 1px solid var(--line); 
 .account-row .card-actions { flex-shrink: 0; margin-left: auto; }
 .card-actions { display: flex; gap: 6px; }
 .icon-button { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 8px; background: var(--control-bg); color: var(--muted); }
-.icon-button.danger { border-color: #f5c6c6; color: var(--danger); background: #fff5f5; }
-.icon-button.danger:hover { background: #fde8e8; border-color: var(--danger); }
+.icon-button.danger { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
+.icon-button.danger:hover { background: var(--danger-icon-bg); border-color: var(--danger); }
 .drag-handle { width: 32px; height: 32px; display: grid; place-items: center; border: 1px dashed var(--hover-border); border-radius: 8px; background: var(--surface-soft); color: var(--green); cursor: grab; touch-action: none; user-select: none; font-size: 18px; font-weight: 800; line-height: 1; }
 .drag-handle:hover { border-style: solid; background: var(--green-soft); }
 .drag-handle:active { cursor: grabbing; }
@@ -564,19 +571,34 @@ dialog label { display: grid; gap: 6px; margin-bottom: 14px; color: var(--muted)
 
 @media (max-width: 900px) {
   .app-shell { grid-template-columns: 1fr; }
-  .sidebar { position: static; width: 100%; height: auto; padding: 14px; }
-  .brand { padding-bottom: 13px; }
-  .sidebar nav { display: flex; overflow-x: auto; }
-  .nav-item { white-space: nowrap; }
+  /* 侧栏 → app 式顶部标签栏：品牌 + 全部导航项横向排列、可滑动 */
+  .sidebar {
+    position: sticky; top: 0; z-index: 6;
+    width: 100%; height: auto;
+    flex-direction: row; align-items: center; gap: 5px;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 8px 12px; padding-top: calc(8px + env(safe-area-inset-top, 0px));
+    border-right: 0; border-bottom: 1px solid var(--line);
+    scrollbar-width: none;
+  }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .brand { padding: 0 8px 0 2px; flex-shrink: 0; }
+  .brand span { display: none; }
+  .sidebar nav { display: contents; }
+  .sidebar-bottom { display: contents; }
+  .nav-item { white-space: nowrap; flex-shrink: 0; padding: 10px 14px; }
   .local-note { display: none; }
-  main { padding: 25px 18px 40px; }
+  main { padding: 22px 16px calc(40px + env(safe-area-inset-bottom, 0px)); }
   .summary-grid { grid-template-columns: 1fr 1fr; }
   .summary-card.primary { grid-column: 1 / -1; }
   .account-grid { grid-template-columns: 1fr; }
   .account-row { grid-template-columns: minmax(110px, .5fr) minmax(260px, 1.4fr) minmax(210px, 1fr) auto; gap: 14px; }
+  .guide-layout { grid-template-columns: 1fr; }
+  .guide-toc { position: static; }
 }
 
 @media (max-width: 580px) {
+  main { padding: 16px 12px calc(32px + env(safe-area-inset-bottom, 0px)); }
   .topbar, .section-toolbar { align-items: stretch; flex-direction: column; }
   .topbar-actions, .date-range { flex-wrap: wrap; }
   .summary-grid { grid-template-columns: 1fr; }
@@ -594,7 +616,19 @@ dialog label { display: grid; gap: 6px; margin-bottom: 14px; color: var(--muted)
   .account-identity { width: auto; flex: 1; }
   .account-row .card-actions { order: -1; margin-left: auto; }
   .account-sections { flex-basis: 100%; }
+  /* 触控友好：任务块、标签更大更好点 */
+  .task-chip { padding: 12px 14px; }
+  .config-tag { padding: 9px 12px; }
+  .task-group-complete-btn { padding: 8px 14px; }
+  /* 弹窗全宽自适应，覆盖桌面版的 min-width */
+  dialog { width: calc(100vw - 20px); max-width: 460px; }
+  .care-plan-dialog form, .resin-dialog form { min-width: 0; }
+  .care-plan-item { flex-wrap: wrap; }
 }
+
+/* PWA（手机网页版）：隐藏无意义的“关闭程序”与“检查更新”卡片 */
+.pwa-mode .settings-card:has(#shutdownApp),
+.pwa-mode .settings-card:has(#checkUpdateBtn) { display: none; }
 
 /* ── 使用说明 ── */
 .sidebar-bottom { margin-top: auto; border-top: 1px solid var(--line); padding-top: 6px; }
