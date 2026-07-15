@@ -462,6 +462,13 @@ function escapeHtml(value) {
 }
 
 async function api(path, options = {}) {
+  if (window.LOCAL_BACKEND) {
+    try {
+      return await window.LOCAL_BACKEND.handle(path, options);
+    } catch (error) {
+      throw new Error(error.message || "操作失败");
+    }
+  }
   const response = await fetch(path, {
     ...options,
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -472,6 +479,9 @@ async function api(path, options = {}) {
   }
   return result.data;
 }
+
+// ID 类型无关比较：桌面版为整数、手机版为 UUID 字符串，统一按字符串比较
+function idEq(a, b) { return String(a) === String(b); }
 
 function showToast(message) {
   const toast = document.querySelector("#toast");
@@ -810,7 +820,7 @@ async function addStoryTask() {
 
 function accountOrderFromPage() {
   return [...document.querySelectorAll("[data-account-row]:not(.inactive)")]
-    .map((row) => Number(row.dataset.accountRow));
+    .map((row) => row.dataset.accountRow);
 }
 
 function clearAccountDragStyles() {
@@ -841,7 +851,7 @@ function bindAccountSorting() {
     const handle = event.target.closest("[data-drag-account]");
     if (!handle || event.button !== 0) return;
     event.preventDefault();
-    const accountId = Number(handle.dataset.dragAccount);
+    const accountId = handle.dataset.dragAccount;
     const row = document.querySelector(`[data-account-row="${accountId}"]`);
     if (!row) return;
     handle.setPointerCapture(event.pointerId);
@@ -1162,7 +1172,7 @@ async function removeConfiguredTask() {
 }
 
 async function openCredentialsDialog(accountId) {
-  const account = state.data.accounts.find((a) => a.id === accountId);
+  const account = state.data.accounts.find((a) => idEq(a.id, accountId));
   state.editingCredentialsAccountId = accountId;
   document.querySelector("#credentialsAccountId").value = accountId;
   document.querySelector("#credentialsDialogEyebrow").textContent = account?.name || "账号凭据";
@@ -1379,7 +1389,7 @@ async function handleAction(target) {
   if (completeAccountId) {
     if (state.selectedDate > localDateString(gameDate())) return;
     const taskIds = state.data.dueTasks
-      .filter((t) => t.account_id === Number(completeAccountId) && !t.completed && !(t.cooldown_remaining_seconds > 0))
+      .filter((t) => idEq(t.account_id, completeAccountId) && !t.completed && !(t.cooldown_remaining_seconds > 0))
       .map((t) => t.id);
     if (!taskIds.length) return;
     await api("/api/tasks/complete-all", { method: "POST", body: JSON.stringify({ date: state.selectedDate, taskIds }) });
@@ -1420,7 +1430,7 @@ async function handleAction(target) {
 
   const storyDeleteId = target.closest("[data-delete-story]")?.dataset.deleteStory;
   if (storyDeleteId) {
-    const task = (state.data.storyTasks || []).find((item) => item.id === Number(storyDeleteId));
+    const task = (state.data.storyTasks || []).find((item) => idEq(item.id, storyDeleteId));
     const confirmed = await confirmAction({
       title: "删除剧情任务？",
       message: `确认删除“${task?.name || "该任务"}”吗？`,
@@ -1435,9 +1445,9 @@ async function handleAction(target) {
 
   const taskTagButton = target.closest("[data-task-tag]");
   if (taskTagButton) {
-    const accountId = Number(taskTagButton.dataset.accountId);
+    const accountId = taskTagButton.dataset.accountId;
     const taskName = taskTagButton.dataset.taskTag;
-    const task = state.data.tasks.find((item) => item.account_id === accountId && item.name === taskName);
+    const task = state.data.tasks.find((item) => idEq(item.account_id, accountId) && item.name === taskName);
     if (noNotesTaskNames.has(taskName)) {
       if (!task) {
         await api(`/api/accounts/${accountId}/task-tags`, {
@@ -1469,7 +1479,7 @@ async function handleAction(target) {
 
   const resinTaskId = target.closest("[data-resin-task]")?.dataset.resinTask;
   if (resinTaskId) {
-    const task = state.data.dueTasks.find((item) => item.id === Number(resinTaskId));
+    const task = state.data.dueTasks.find((item) => idEq(item.id, resinTaskId));
     if (task) openResinDialog(task);
     return;
   }
@@ -1497,7 +1507,7 @@ async function handleAction(target) {
   if (taskId) {
     const button = target.closest("[data-toggle-task]");
     const completed = button.dataset.completed !== "true";
-    const task = state.data.dueTasks.find((item) => item.id === Number(taskId));
+    const task = state.data.dueTasks.find((item) => idEq(item.id, taskId));
     if (completed && (task?.cooldown_remaining_seconds || 0) > 0) return;
     if (completed && task?.name === "质变仪") {
       openTransformerUsageDialog(task);
@@ -1515,13 +1525,13 @@ async function handleAction(target) {
 
   const credentialsBtn = target.closest("[data-credentials-account]");
   if (credentialsBtn) {
-    await openCredentialsDialog(Number(credentialsBtn.dataset.credentialsAccount));
+    await openCredentialsDialog(credentialsBtn.dataset.credentialsAccount);
     return;
   }
 
   const editAccountId = target.closest("[data-edit-account]")?.dataset.editAccount;
   if (editAccountId) {
-    openAccountDialog(state.data.accounts.find((item) => item.id === Number(editAccountId)));
+    openAccountDialog(state.data.accounts.find((item) => idEq(item.id, editAccountId)));
     return;
   }
   const deleteAccountId = target.closest("[data-delete-account]")?.dataset.deleteAccount;
@@ -1546,7 +1556,7 @@ async function handleAction(target) {
   }
   const purgeAccountId = target.closest("[data-purge-account]")?.dataset.purgeAccount;
   if (purgeAccountId) {
-    const account = state.data.accounts.find((a) => a.id === Number(purgeAccountId));
+    const account = state.data.accounts.find((a) => idEq(a.id, purgeAccountId));
     const confirmed = await confirmAction({ title: "彻底删除号主", message: `确认删除「${account?.name}」？删除后不再显示，历史完成记录仍可查询。`, confirmText: "删除" });
     if (!confirmed) return;
     await api(`/api/accounts/${purgeAccountId}/purge`, { method: "POST", body: "{}" });
@@ -1557,7 +1567,7 @@ async function handleAction(target) {
   const customTagButton = target.closest("[data-custom-tag-id]");
   if (customTagButton) {
     const accountId = customTagButton.dataset.accountId;
-    const tagId = Number(customTagButton.dataset.customTagId);
+    const tagId = customTagButton.dataset.customTagId;
     const enabled = customTagButton.dataset.enabled !== "true";
     await api(`/api/accounts/${accountId}/custom-tags`, {
       method: "POST",
@@ -1583,7 +1593,7 @@ async function handleAction(target) {
   }
   const editPlanId = target.closest("[data-edit-plan]")?.dataset.editPlan;
   if (editPlanId) {
-    const plan = (state.data.carePlans || []).find((item) => item.id === Number(editPlanId));
+    const plan = (state.data.carePlans || []).find((item) => idEq(item.id, editPlanId));
     if (!plan) return;
     state.editingCarePlanTasks = new Set(plan.tasks);
     document.querySelector("#carePlanId").value = plan.id;
@@ -1595,7 +1605,7 @@ async function handleAction(target) {
   }
   const deletePlanId = target.closest("[data-delete-plan]")?.dataset.deletePlan;
   if (deletePlanId) {
-    const plan = (state.data.carePlans || []).find((item) => item.id === Number(deletePlanId));
+    const plan = (state.data.carePlans || []).find((item) => idEq(item.id, deletePlanId));
     const confirmed = await confirmAction({
       title: `删除方案「${plan?.name || ""}」？`,
       message: "删除后不影响任何已创建的号主。",
@@ -1611,7 +1621,7 @@ async function handleAction(target) {
   }
   const enableAllTagId = target.closest("[data-enable-all-tag]")?.dataset.enableAllTag;
   if (enableAllTagId) {
-    const tag = (state.data.customTags || []).find((item) => item.id === Number(enableAllTagId));
+    const tag = (state.data.customTags || []).find((item) => idEq(item.id, enableAllTagId));
     const confirmed = await confirmAction({
       title: `为全部号主启用「${tag?.name || "该活动"}」？`,
       message: "将为所有尚未启用此活动的号主添加该任务，已启用的号主不受影响。",
@@ -1625,12 +1635,12 @@ async function handleAction(target) {
   }
   const addTaskId = target.closest("[data-add-task]")?.dataset.addTask;
   if (addTaskId) {
-    openTaskDialog(Number(addTaskId));
+    openTaskDialog(addTaskId);
     return;
   }
   const editTaskId = target.closest("[data-edit-task]")?.dataset.editTask;
   if (editTaskId) {
-    openTaskDialog(null, state.data.tasks.find((item) => item.id === Number(editTaskId)));
+    openTaskDialog(null, state.data.tasks.find((item) => idEq(item.id, editTaskId)));
     return;
   }
   const deleteTaskId = target.closest("[data-delete-task]")?.dataset.deleteTask;
@@ -1781,14 +1791,10 @@ async function importBackup(event) {
     confirmText: "确认导入",
   });
   if (!confirmed) return;
-  const response = await fetch("/api/import", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: text,
-  });
-  if (!response.ok) {
-    const result = await response.json().catch(() => ({}));
-    showToast(result.error || "导入失败");
+  try {
+    await api("/api/import", { method: "POST", body: text });
+  } catch (error) {
+    showToast(error.message || "导入失败");
     return;
   }
   await loadState();
@@ -1886,7 +1892,8 @@ async function shutdownApp() {
 function updateProxyDaysLeft() {
   const val = document.querySelector("#accountProxyUntil").value;
   const el = document.querySelector("#proxyDaysLeft");
-  if (!val) { el.textContent = ""; return; }
+  // 留空即代表永久：不设截止日期，也不做到期提醒
+  if (!val) { el.textContent = "永久（不提醒到期）"; return; }
   const today = localDateString(gameDate());
   const days = Math.ceil((new Date(val + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000);
   if (days === 0) el.textContent = "今天到期";
@@ -1925,9 +1932,13 @@ function bindEvents() {
   });
   document.querySelectorAll(".proxy-quick-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const d = new Date();
-      d.setDate(d.getDate() + Number(btn.dataset.proxyDays));
-      document.querySelector("#accountProxyUntil").value = localDateString(d);
+      if (btn.dataset.proxyDays === "permanent") {
+        document.querySelector("#accountProxyUntil").value = "";
+      } else {
+        const d = new Date();
+        d.setDate(d.getDate() + Number(btn.dataset.proxyDays));
+        document.querySelector("#accountProxyUntil").value = localDateString(d);
+      }
       updateProxyDaysLeft();
     });
   });

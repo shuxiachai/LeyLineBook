@@ -1,0 +1,16 @@
+{
+  "id": "/LeyLineBook/",
+  "name": "LeyLineBook 地脉簿",
+  "short_name": "地脉簿",
+  "description": "原神多账号任务追踪工具",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1f1c",
+  "theme_color": "#2f6b4f",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

@@ -62,7 +62,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.0.1"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 
 _last_heartbeat: float = 0.0
@@ -1332,51 +1332,71 @@ def import_backup(payload: dict) -> None:
         for table in ("task_records", "tasks", "account_group_notes",
                       "story_tasks", "custom_task_tags", "care_plans", "accounts"):
             connection.execute(f"DELETE FROM {table}")
-        for row in payload.get("customTags", []):
-            connection.execute(
-                "INSERT OR IGNORE INTO custom_task_tags(id,name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?,?)",
-                (row.get("id"), row.get("name"), row.get("category", "大活动"),
-                 row.get("duration_days", 16), row.get("start_date"), row.get("created_at", now_text())),
-            )
-        for row in payload.get("carePlans", []):
-            connection.execute(
-                "INSERT OR IGNORE INTO care_plans(id,name,tasks,created_at) VALUES(?,?,?,?)",
-                (row.get("id"), row.get("name"), row.get("tasks", "[]"), row.get("created_at", now_text())),
-            )
+
+        # 备份里的 ID 可能是整数（电脑版）或 UUID 字符串（手机版），一律重新分配自增整数，
+        # 按实体分表建立“旧 ID → 新 ID”映射，据此重连外键，兼容两端来源的备份。
+        acc_map: dict[str, int] = {}
+        tag_map: dict[str, int] = {}
+        task_map: dict[str, int] = {}
+        key = lambda v: None if v is None else str(v)
+
         for row in payload.get("accounts", []):
-            connection.execute(
-                "INSERT OR IGNORE INTO accounts(id,name,owner,notes,proxy_until,active,deleted,sort_order,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
-                (row.get("id"), row.get("name", ""), row.get("owner", ""), row.get("notes", ""),
+            cur = connection.execute(
+                "INSERT INTO accounts(name,owner,notes,proxy_until,active,deleted,sort_order,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (row.get("name", ""), row.get("owner", ""), row.get("notes", ""),
                  row.get("proxy_until"), row.get("active", 1), row.get("deleted", 0),
                  row.get("sort_order", 0), row.get("created_at", now_text())),
             )
-        for row in payload.get("tasks", []):
+            if row.get("id") is not None:
+                acc_map[key(row.get("id"))] = cur.lastrowid
+        for row in payload.get("customTags", []):
+            cur = connection.execute(
+                "INSERT INTO custom_task_tags(name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?)",
+                (row.get("name"), row.get("category", "大活动"),
+                 row.get("duration_days", 16), row.get("start_date"), row.get("created_at", now_text())),
+            )
+            if row.get("id") is not None:
+                tag_map[key(row.get("id"))] = cur.lastrowid
+        for row in payload.get("carePlans", []):
             connection.execute(
-                "INSERT OR IGNORE INTO tasks(id,account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (row.get("id"), row.get("account_id"), row.get("name", ""),
+                "INSERT OR IGNORE INTO care_plans(name,tasks,created_at) VALUES(?,?,?)",
+                (row.get("name"), row.get("tasks", "[]"), row.get("created_at", now_text())),
+            )
+        for row in payload.get("tasks", []):
+            cur = connection.execute(
+                "INSERT INTO tasks(account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (acc_map.get(key(row.get("account_id"))), row.get("name", ""),
                  row.get("recurrence", "daily"), row.get("interval_days"), row.get("monthly_day"),
                  row.get("next_due"), row.get("notes", ""), row.get("active", 1),
-                 row.get("sort_order", 0), row.get("custom_tag_id"), row.get("created_at", now_text())),
+                 row.get("sort_order", 0), tag_map.get(key(row.get("custom_tag_id"))),
+                 row.get("created_at", now_text())),
             )
+            if row.get("id") is not None:
+                task_map[key(row.get("id"))] = cur.lastrowid
         for row in payload.get("records", []):
+            task_new = task_map.get(key(row.get("task_id")))
+            if task_new is None:
+                continue
             connection.execute(
-                "INSERT OR IGNORE INTO task_records(id,task_id,task_date,completed_at,previous_next_due,note) VALUES(?,?,?,?,?,?)",
-                (row.get("id"), row.get("task_id"), row.get("task_date", ""),
+                "INSERT OR IGNORE INTO task_records(task_id,task_date,completed_at,previous_next_due,note) VALUES(?,?,?,?,?)",
+                (task_new, row.get("task_date", ""),
                  row.get("completed_at", now_text()), row.get("previous_next_due"), row.get("note", "")),
             )
         for row in payload.get("storyTasks", []):
             connection.execute(
-                "INSERT OR IGNORE INTO story_tasks(id,account_id,owner_name,name,task_type,has_bonus,bonus_deadline,completed_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (row.get("id"), row.get("account_id"), row.get("owner_name", ""),
+                "INSERT INTO story_tasks(account_id,owner_name,name,task_type,has_bonus,bonus_deadline,completed_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (acc_map.get(key(row.get("account_id"))), row.get("owner_name", ""),
                  row.get("name", ""), row.get("task_type", "world"), row.get("has_bonus", 0),
                  row.get("bonus_deadline"), row.get("completed_at"), row.get("active", 1),
                  row.get("created_at", now_text())),
             )
         for row in payload.get("groupNotes", []):
+            acc_new = acc_map.get(key(row.get("account_id")))
+            if acc_new is None:
+                continue
             connection.execute(
-                "INSERT OR IGNORE INTO account_group_notes(id,account_id,category,note,created_at) VALUES(?,?,?,?,?)",
-                (row.get("id"), row.get("account_id"), row.get("category", "daily"),
-                 row.get("note", ""), row.get("created_at", now_text())),
+                "INSERT OR IGNORE INTO account_group_notes(account_id,category,note,created_at) VALUES(?,?,?,?)",
+                (acc_new, row.get("category", "daily"), row.get("note", ""), row.get("created_at", now_text())),
             )
         connection.execute("PRAGMA foreign_keys = ON")
 

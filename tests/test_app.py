@@ -161,9 +161,9 @@ class TaskRecorderTest(unittest.TestCase):
             accounts = connection.execute(
                 "SELECT id, name, credentials FROM accounts ORDER BY id"
             ).fetchall()
-        self.assertEqual([(row["id"], row["name"]) for row in accounts], [(501, "导入后号主")])
+        # ID 在导入时会重新分配（兼容整数/UUID 备份），因此按名称而非具体 ID 断言
+        self.assertEqual([row["name"] for row in accounts], ["导入后号主"])
         self.assertIsNone(accounts[0]["credentials"])
-        self.assertNotEqual(existing["id"], accounts[0]["id"])
 
         app.reset_database()
         with app.db_connection() as connection:
@@ -649,6 +649,57 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertEqual(names, {"体力", "方案活动A"})
         activity_task = next(task for task in tasks if task["name"] == "方案活动A")
         self.assertEqual(activity_task["custom_tag_id"], big["id"])
+
+    def test_import_backup_roundtrip_preserves_data(self):
+        account = create_test_account({"name": "往返测试号"})
+        app.set_account_task_tag(account["id"], {"tag": "体力", "enabled": True})
+        app.set_account_task_tag(account["id"], {"tag": "深境螺旋", "enabled": True})
+        state = app.load_state(date.today().isoformat())
+        daily = next(t for t in state["tasks"] if t["account_id"] == account["id"] and t["name"] == "体力")
+        app.toggle_task(daily["id"], date.today().isoformat(), True)
+
+        backup = app.build_backup_payload()
+        acc_before = len(backup["accounts"])
+        rec_before = len(backup["records"])
+        app.import_backup(backup)
+
+        after = app.build_backup_payload()
+        self.assertEqual(len(after["accounts"]), acc_before)
+        self.assertEqual(len(after["records"]), rec_before)
+        # 外键仍然连得上：任务的 account_id 指向真实存在的号主
+        acc_ids = {a["id"] for a in after["accounts"]}
+        self.assertTrue(all(t["account_id"] in acc_ids for t in after["tasks"]))
+
+    def test_import_backup_accepts_uuid_ids(self):
+        # 模拟手机版导出的 UUID 字符串 ID 备份
+        backup = {
+            "accounts": [{"id": "uuid-acc-1", "name": "手机号", "proxy_until": "2099-01-01",
+                          "active": 1, "deleted": 0, "sort_order": 0, "created_at": "2026-01-01T00:00:00"}],
+            "customTags": [{"id": "uuid-tag-1", "name": "手机活动", "category": "大活动",
+                            "duration_days": 16, "start_date": "2026-06-01"}],
+            "tasks": [
+                {"id": "uuid-task-1", "account_id": "uuid-acc-1", "name": "体力", "recurrence": "daily",
+                 "active": 1, "sort_order": 0, "created_at": "2026-01-01T00:00:00"},
+                {"id": "uuid-task-2", "account_id": "uuid-acc-1", "name": "手机活动", "recurrence": "once",
+                 "next_due": "2026-06-01", "custom_tag_id": "uuid-tag-1", "active": 1, "sort_order": 6,
+                 "created_at": "2026-01-01T00:00:00"},
+            ],
+            "records": [{"id": "uuid-rec-1", "task_id": "uuid-task-1", "task_date": "2026-06-05",
+                         "completed_at": "2026-06-05T12:00:00", "note": ""}],
+            "storyTasks": [], "carePlans": [],
+        }
+        app.import_backup(backup)
+        after = app.build_backup_payload()
+        self.assertEqual(len(after["accounts"]), 1)
+        self.assertEqual(after["accounts"][0]["name"], "手机号")
+        # ID 已转成整数，且外键正确重连
+        acc_id = after["accounts"][0]["id"]
+        self.assertIsInstance(acc_id, int)
+        self.assertTrue(all(t["account_id"] == acc_id for t in after["tasks"]))
+        activity = next(t for t in after["tasks"] if t["name"] == "手机活动")
+        tag_id = after["customTags"][0]["id"]
+        self.assertEqual(activity["custom_tag_id"], tag_id)
+        self.assertEqual(len(after["records"]), 1)
 
     def test_food_task_exposes_previous_day_completion_time(self):
         account = create_test_account({"name": "狗粮时间测试号"})
