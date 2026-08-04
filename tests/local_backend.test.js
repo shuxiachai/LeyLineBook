@@ -200,6 +200,47 @@ test("local-backend.js 业务逻辑", async (t) => {
     const st = await api(`/api/state?date=${today}`, "GET");
     assert.ok(st.settings.warWindow && st.settings.warWindow.eventStart);
   });
+
+  await t.test("托管方案的大活动/小活动开关：建号时只套用勾选的分类", async () => {
+    const bigTag = await api("/api/custom-tags", "POST", {
+      name: "方案活动A",
+      category: "大活动",
+      durationDays: 16,
+      startDate: today,
+    });
+    await api("/api/custom-tags", "POST", {
+      name: "方案活动B",
+      category: "小活动",
+      durationDays: 7,
+      startDate: today,
+    });
+
+    const plan = await api("/api/care-plans", "POST", {
+      name: "活动托",
+      tasks: ["体力", "大活动"],
+    });
+    const acc3 = await api("/api/accounts", "POST", {
+      name: "活动方案号",
+      proxyUntil: "2099-12-31",
+      planId: plan.id,
+    });
+
+    const st = await api(`/api/state?date=${today}`, "GET");
+    const names = new Set(
+      st.tasks.filter((t2) => t2.account_id === acc3.id).map((t2) => t2.name)
+    );
+    assert.deepEqual(names, new Set(["体力", "方案活动A"]));
+    assert.equal(
+      names.has("方案活动B"),
+      false,
+      "未勾选的小活动分类不应被套用"
+    );
+
+    const activityTask = st.tasks.find(
+      (t2) => t2.account_id === acc3.id && t2.name === "方案活动A"
+    );
+    assert.equal(activityTask.custom_tag_id, bigTag.id, "活动任务应正确关联到对应的自定义标签 id");
+  });
 });
 
 test("local-backend.js 路由覆盖：前端调用的每个接口都能被匹配", async () => {
