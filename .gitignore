@@ -25,5 +25,4 @@ webview/
 *.exe
 
 # 本地专用文档，不进版本库
-HANDOFF.md
 RESUME_WRITEUP.md
