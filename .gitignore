@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+node_modules/
 
 .venv/
 .claude/
@@ -22,3 +23,7 @@ task_recorder.log
 
 webview/
 *.exe
+
+# 本地专用文档，不进版本库
+HANDOFF.md
+RESUME_WRITEUP.md

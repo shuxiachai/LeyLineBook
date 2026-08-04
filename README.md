@@ -84,4 +84,11 @@ python -m unittest discover -s tests -v
 python -m PyInstaller --clean -y LeyLineBook.spec
 ```
 
-数据库、日志、缓存和打包结果均不应提交到源码仓库，具体规则见 `.gitignore`。
+移动端 PWA 的业务逻辑（`static/local-backend.js`，用 IndexedDB 复刻后端接口）另有一套 Node.js 测试，验证与桌面端 Python 版本行为一致：
+
+```powershell
+npm install
+npm test
+```
+
+数据库、日志、缓存、`node_modules` 和打包结果均不应提交到源码仓库，具体规则见 `.gitignore`。
