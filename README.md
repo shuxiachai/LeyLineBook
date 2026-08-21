@@ -14,7 +14,7 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 
 ## 手机版
 
-浏览器打开 **[https://shuxiachai.github.io/LeyLineBook/](https://shuxiachai.github.io/LeyLineBook/)**，菜单选择"添加到主屏幕"即可安装，支持离线使用。手机与电脑数据各自独立保存，可通过导出/导入备份手动同步。
+浏览器打开 **[https://shuxiachai.github.io/LeyLineBook/](https://shuxiachai.github.io/LeyLineBook/)**，菜单选择"添加到主屏幕"即可安装，支持离线使用。手机与电脑数据各自独立保存，可通过导出/导入备份手动同步。手机版不会保存账号、密码或验证码；导入前会自动创建本地快照，最近保留 5 个并可在设置页恢复。
 
 ## 主要功能
 
@@ -24,11 +24,11 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 - 剧情任务：按号主记录魔神任务、传说任务和世界任务，可标记额外奖励期限
 - 号主管理：新增、修改、停用号主，按住右侧拖动把手可调整顺序
 - 托管方案：自定义任务组合模板（如普托/精托），可含大/小活动开关，创建号主时一键套用，创建后与方案互不影响
-- 凭据管理：可选保存账号名称、密码和凭据备注，使用当前 Windows 用户的 DPAPI 加密
+- 凭据管理（Windows）：可选保存账号名称、密码和凭据备注，使用当前 Windows 用户的 DPAPI 加密；PWA 不提供凭据存储
 - 任务管理：每日、间隔周期、一次性任务；体力任务可用快捷标签记录周本（支持自定义周本名称），并可选记录当前树脂、显示预计回满时间；壶冷却期间可提前收取并顺延冷却
 - 历史记录：按日期范围查询，支持按号主和任务筛选
-- 数据备份：设置页可导出或导入 JSON 文件（导入前自动保存快照），也可在二次确认后清空数据库
-- 版本更新：启动时静默检查新版本，设置页可手动检查并更新打包版 EXE
+- 数据备份：采用带格式标识和版本号的 JSON 备份，兼容旧版文件；桌面端与 PWA 导入前都会保存快照
+- 版本更新：启动时静默检查新版本，自动更新仅接受精确命名的 GitHub Release 资产，并校验 SHA-256、下载大小和新版本启动状态
 - 界面主题：黑、白、绿、蓝、紫、玫瑰、琥珀七种主色调，选择后自动记忆
 - 角色主题：从本机选择图片后自动提取主色与明暗，启用全屏背景和磨砂界面；点击任一纯色主题即可恢复纯色，图片只保存在本机的应用窗口存储中
 
@@ -65,7 +65,7 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 
 ## 数据安全
 
-所有数据都在本机。账号凭据使用 Windows DPAPI 加密，仅能由保存凭据时的 Windows 用户账户解密；导出的 JSON 备份不包含凭据，导入后需要重新填写。请勿在普通备注中填写密码或验证码，也不要把真实数据库上传到 GitHub。建议定期导出 JSON 备份；数据库中的加密凭据换电脑或更换 Windows 用户后无法解密。
+所有数据都在本机。Windows 版账号凭据使用 DPAPI 加密，仅能由保存凭据时的 Windows 用户账户解密；PWA 不存储凭据，并会在数据库升级时清除早期版本可能留下的明文字段。导出的 JSON 备份不包含凭据，导入后需要重新填写。请勿在普通备注中填写密码或验证码，也不要把真实数据库上传到 GitHub。建议定期导出 JSON 备份；数据库中的加密凭据换电脑或更换 Windows 用户后无法解密。
 
 ## 演示数据
 
@@ -88,11 +88,13 @@ python -m unittest discover -s tests -v
 python -m PyInstaller --clean -y LeyLineBook.spec
 ```
 
-移动端 PWA 的业务逻辑（`static/local-backend.js`，用 IndexedDB 复刻后端接口）另有一套 Node.js 测试，验证与桌面端 Python 版本行为一致：
+移动端 PWA 的业务逻辑（`static/local-backend.js`，用 IndexedDB 复刻后端接口）另有一套 Node.js 测试。两端共同读取 `tests/fixtures/scheduling_cases.json`，持续验证每周刷新、版本窗口、到期任务和汇总统计的一致性：
 
 ```powershell
 npm install
 npm test
 ```
+
+仓库包含三条 GitHub Actions 流水线：`CI` 在 Windows 上执行双端测试、PyInstaller 打包和 EXE 启动冒烟；`Release` 在推送与 `APP_VERSION` 一致的 `vX.Y.Z` 标签时发布 EXE 与同名 `.sha256` 文件；`Deploy PWA` 在 `main` 分支的静态资源变更通过测试后部署 `static/` 到 GitHub Pages。
 
 数据库、日志、缓存、`node_modules` 和打包结果均不应提交到源码仓库，具体规则见 `.gitignore`。

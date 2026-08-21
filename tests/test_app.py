@@ -256,6 +256,40 @@ class TaskRecorderTest(unittest.TestCase):
         )
         self.assertFalse(restored["completed"])
 
+    def test_shared_scheduling_contract_matches_desktop_logic(self):
+        fixture_path = APP_DIR / "tests" / "fixtures" / "scheduling_cases.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        for item in fixture["weeklyCases"]:
+            actual = app.weekly_cycle_start(
+                date.fromisoformat(item["reference"]),
+                datetime.fromisoformat(item["current"]),
+            )
+            self.assertEqual(actual.isoformat(), item["expected"], item["name"])
+
+        for item in fixture["versionCases"]:
+            actual = app.version_window(
+                fixture["versionAnchorDate"], date.fromisoformat(item["reference"])
+            )
+            self.assertEqual(actual, item["expected"], item["reference"])
+
+        for item in fixture["stateCases"]:
+            app.reset_database()
+            app.import_backup({**fixture["stateFixture"], "records": item["records"]})
+            app.update_version_start({"versionStartDate": fixture["versionAnchorDate"]})
+            current = app.load_state(item["selectedDate"])
+            self.assertEqual(
+                [task["name"] for task in current["dueTasks"]],
+                item["expected"]["dueNames"],
+                item["name"],
+            )
+            self.assertEqual(
+                [task["name"] for task in current["dueTasks"] if task["completed"]],
+                item["expected"]["completedNames"],
+                item["name"],
+            )
+            self.assertEqual(current["summary"], item["expected"]["summary"], item["name"])
+
     def test_daily_task_can_be_completed_and_undone(self):
         account = create_test_account({"name": "测试号", "dailyTask": "每日委托"})
         selected_date = date.today().isoformat()
@@ -659,16 +693,25 @@ class TaskRecorderTest(unittest.TestCase):
         app.toggle_task(daily["id"], date.today().isoformat(), True)
 
         backup = app.build_backup_payload()
-        acc_before = len(backup["accounts"])
-        rec_before = len(backup["records"])
+        self.assertEqual(backup["format"], "leylinebook-backup")
+        self.assertEqual(backup["schemaVersion"], 2)
+        acc_before = len(backup["data"]["accounts"])
+        rec_before = len(backup["data"]["records"])
         app.import_backup(backup)
 
         after = app.build_backup_payload()
-        self.assertEqual(len(after["accounts"]), acc_before)
-        self.assertEqual(len(after["records"]), rec_before)
+        data = after["data"]
+        self.assertEqual(len(data["accounts"]), acc_before)
+        self.assertEqual(len(data["records"]), rec_before)
         # 外键仍然连得上：任务的 account_id 指向真实存在的号主
-        acc_ids = {a["id"] for a in after["accounts"]}
-        self.assertTrue(all(t["account_id"] in acc_ids for t in after["tasks"]))
+        acc_ids = {a["id"] for a in data["accounts"]}
+        self.assertTrue(all(t["account_id"] in acc_ids for t in data["tasks"]))
+
+    def test_import_backup_rejects_unknown_schema_version(self):
+        backup = app.build_backup_payload()
+        backup["schemaVersion"] = 999
+        with self.assertRaisesRegex(ValueError, "不支持的备份版本"):
+            app.import_backup(backup)
 
     def test_import_backup_accepts_uuid_ids(self):
         # 模拟手机版导出的 UUID 字符串 ID 备份
@@ -689,7 +732,7 @@ class TaskRecorderTest(unittest.TestCase):
             "storyTasks": [], "carePlans": [],
         }
         app.import_backup(backup)
-        after = app.build_backup_payload()
+        after = app.build_backup_payload()["data"]
         self.assertEqual(len(after["accounts"]), 1)
         self.assertEqual(after["accounts"][0]["name"], "手机号")
         # ID 已转成整数，且外键正确重连
@@ -1056,6 +1099,10 @@ class TaskRecorderTest(unittest.TestCase):
                                 "name": "LeyLineBook-v1.5.0-Windows-x64.exe",
                                 "browser_download_url": "right",
                             },
+                            {
+                                "name": "LeyLineBook-v1.5.0-Windows-x64.exe.sha256",
+                                "browser_download_url": "checksum",
+                            },
                         ],
                     }
                 ).encode()
@@ -1068,6 +1115,110 @@ class TaskRecorderTest(unittest.TestCase):
         self.assertTrue(result["hasUpdate"])
         self.assertEqual(result["latest"], "1.5.0")
         self.assertEqual(result["downloadUrl"], "right")
+        self.assertEqual(result["checksumUrl"], "checksum")
+
+    def test_verified_update_download_checks_sha256(self):
+        filename = "LeyLineBook-v9.9.9-Windows-x64.exe"
+        package = b"verified update package"
+        checksum = app.hashlib.sha256(package).hexdigest()
+
+        class FakeResponse:
+            def __init__(self, body, url, headers=None):
+                self.body = body
+                self.offset = 0
+                self.url = url
+                self.headers = headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return self.url
+
+            def read(self, size=-1):
+                if size < 0:
+                    size = len(self.body) - self.offset
+                result = self.body[self.offset:self.offset + size]
+                self.offset += len(result)
+                return result
+
+        responses = [
+            FakeResponse(
+                f"{checksum}  {filename}\n".encode(),
+                "https://github.com/example/checksum",
+            ),
+            FakeResponse(
+                package,
+                "https://release-assets.githubusercontent.com/example/package",
+                {"Content-Length": str(len(package))},
+            ),
+        ]
+        with patch.object(app.urllib.request, "urlopen", side_effect=lambda *_a, **_k: responses.pop(0)):
+            result = app._download_verified_update(
+                "https://github.com/example/package",
+                "https://github.com/example/checksum",
+                filename,
+            )
+        try:
+            self.assertEqual(result.read_bytes(), package)
+        finally:
+            result.unlink(missing_ok=True)
+
+    def test_verified_update_rejects_oversized_content_length(self):
+        filename = "LeyLineBook-v9.9.9-Windows-x64.exe"
+        checksum = "0" * 64
+
+        class FakeResponse:
+            def __init__(self, body, headers=None):
+                self.body = body
+                self.headers = headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self):
+                return "https://github.com/example/asset"
+
+            def read(self, _size=-1):
+                body, self.body = self.body, b""
+                return body
+
+        responses = [
+            FakeResponse(f"{checksum}  {filename}\n".encode()),
+            FakeResponse(b"", {"Content-Length": str(app.MAX_UPDATE_SIZE + 1)}),
+        ]
+        with patch.object(app.urllib.request, "urlopen", side_effect=lambda *_a, **_k: responses.pop(0)):
+            with self.assertRaisesRegex(ValueError, "250 MB"):
+                app._download_verified_update(
+                    "https://github.com/example/package",
+                    "https://github.com/example/checksum",
+                    filename,
+                )
+
+    def test_update_batch_deletes_old_exe_only_after_health_signal(self):
+        batch = app._build_update_batch(
+            Path("new.part"), Path("LeyLineBook-new.exe"), Path("LeyLineBook-old.exe"), Path("health.ok")
+        )
+        self.assertIn("--update-health-file", batch)
+        self.assertLess(batch.index(":healthy"), batch.index("LeyLineBook-old.exe"))
+
+    def test_update_health_marker_is_created_only_in_temp_directory(self):
+        marker = Path(tempfile.gettempdir()) / f"LeyLineBook-update-health-{app.secrets.token_hex(8)}.ok"
+        try:
+            app._write_update_health_file(str(marker))
+            self.assertEqual(marker.read_bytes(), b"ready\n")
+            with self.assertRaises(FileExistsError):
+                app._write_update_health_file(str(marker))
+            with self.assertRaisesRegex(ValueError, "路径无效"):
+                app._write_update_health_file(str(APP_DIR / marker.name))
+        finally:
+            marker.unlink(missing_ok=True)
 
 
 class SecurityTest(unittest.TestCase):
@@ -1168,12 +1319,37 @@ class SecurityTest(unittest.TestCase):
     def test_update_download_url_host_is_whitelisted(self):
         app._latest_release = {
             "downloadUrl": "https://evil.example.com/LeyLineBook.exe",
+            "checksumUrl": "https://github.com/example/LeyLineBook.exe.sha256",
             "latest": "9.9.9",
         }
         with patch.object(app.sys, "frozen", True, create=True):
             with self.assertRaisesRegex(ValueError, "非法下载地址"):
                 app.start_update()
         app._latest_release = None
+
+    def test_update_requires_checksum_asset(self):
+        app._latest_release = {
+            "downloadUrl": "https://github.com/example/LeyLineBook.exe",
+            "checksumUrl": None,
+            "latest": "9.9.9",
+        }
+        with patch.object(app.sys, "frozen", True, create=True):
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                app.start_update()
+        app._latest_release = None
+
+    def test_checksum_filename_must_match_installation_asset(self):
+        checksum = "ab" * 32
+        self.assertEqual(
+            app._parse_sha256_checksum(f"{checksum}  LeyLineBook.exe", "LeyLineBook.exe"),
+            checksum,
+        )
+        with self.assertRaisesRegex(ValueError, "名称不匹配"):
+            app._parse_sha256_checksum(f"{checksum}  other.exe", "LeyLineBook.exe")
+
+    def test_update_url_requires_exact_github_host(self):
+        with self.assertRaisesRegex(ValueError, "非法下载地址"):
+            app._validate_update_url("https://github.com.evil.example/update.exe", "下载地址")
 
 
 if __name__ == "__main__":

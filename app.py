@@ -4,10 +4,12 @@ import argparse
 import base64
 import ctypes
 import errno
+import hashlib
 import json
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -62,8 +64,14 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "3.0.2"
+APP_VERSION = "3.0.3"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
+BACKUP_FORMAT = "leylinebook-backup"
+BACKUP_SCHEMA_VERSION = 2
+MAX_UPDATE_SIZE = 250 * 1024 * 1024
+ALLOWED_UPDATE_HOSTS = frozenset(
+    ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "github-releases.githubusercontent.com")
+)
 
 _last_heartbeat: float = 0.0
 _latest_release: dict | None = None
@@ -89,19 +97,130 @@ def _parse_version(v: str) -> tuple:
         return (0,)
 
 
-def _release_asset_download_url(assets: list[dict], latest_tag: str) -> str | None:
+def _release_asset_urls(assets: list[dict], latest_tag: str) -> tuple[str | None, str | None]:
     preferred_name = f"LeyLineBook-v{latest_tag}-Windows-x64.exe"
-    for asset in assets:
-        if asset.get("name") == preferred_name:
-            return asset.get("browser_download_url")
-    return next(
-        (
-            asset.get("browser_download_url")
-            for asset in assets
-            if str(asset.get("name", "")).lower().endswith(".exe")
-        ),
-        None,
+    checksum_name = f"{preferred_name}.sha256"
+    urls = {
+        str(asset.get("name", "")): asset.get("browser_download_url")
+        for asset in assets
+        if isinstance(asset, dict)
+    }
+    return urls.get(preferred_name), urls.get(checksum_name)
+
+
+def _validate_update_url(value: str, label: str) -> str:
+    parsed = urlparse(value)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in ALLOWED_UPDATE_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError(f"非法{label}: {value!r}")
+    return value
+
+
+def _parse_sha256_checksum(text: str, expected_filename: str) -> str:
+    lines = [line.strip() for line in text.lstrip("\ufeff").splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError("更新校验文件格式无效")
+    match = re.fullmatch(r"([0-9a-fA-F]{64})(?:\s+\*?(.+))?", lines[0])
+    if not match:
+        raise ValueError("更新校验文件格式无效")
+    filename = match.group(2)
+    if filename and Path(filename.strip()).name != expected_filename:
+        raise ValueError("更新校验文件与安装包名称不匹配")
+    return match.group(1).lower()
+
+
+def _response_update_url(response, requested_url: str, label: str) -> None:
+    final_url = response.geturl() if hasattr(response, "geturl") else requested_url
+    _validate_update_url(final_url, label)
+
+
+def _download_verified_update(download_url: str, checksum_url: str, expected_filename: str) -> Path:
+    checksum_request = urllib.request.Request(
+        checksum_url, headers={"User-Agent": f"LeyLineBook/{APP_VERSION}"}
     )
+    with urllib.request.urlopen(checksum_request, timeout=15) as response:
+        _response_update_url(response, checksum_url, "校验文件地址")
+        checksum_bytes = response.read(4097)
+    if len(checksum_bytes) > 4096:
+        raise ValueError("更新校验文件过大")
+    try:
+        expected_hash = _parse_sha256_checksum(checksum_bytes.decode("ascii"), expected_filename)
+    except UnicodeDecodeError as error:
+        raise ValueError("更新校验文件格式无效") from error
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="LeyLineBook-update-", suffix=".part", delete=False) as target:
+            temp_path = Path(target.name)
+            request = urllib.request.Request(
+                download_url, headers={"User-Agent": f"LeyLineBook/{APP_VERSION}"}
+            )
+            with urllib.request.urlopen(request, timeout=120) as response:
+                _response_update_url(response, download_url, "下载地址")
+                length_header = response.headers.get("Content-Length")
+                declared_total: int | None = None
+                if length_header:
+                    try:
+                        declared_total = int(length_header)
+                    except ValueError as error:
+                        raise ValueError("更新包大小信息无效") from error
+                    if declared_total < 0 or declared_total > MAX_UPDATE_SIZE:
+                        raise ValueError("更新包超过 250 MB 大小限制")
+                _update_state["total"] = declared_total or 0
+                downloaded = 0
+                digest = hashlib.sha256()
+                while True:
+                    chunk = response.read(65536)
+                    if not chunk:
+                        break
+                    downloaded += len(chunk)
+                    if downloaded > MAX_UPDATE_SIZE:
+                        raise ValueError("更新包超过 250 MB 大小限制")
+                    target.write(chunk)
+                    digest.update(chunk)
+                    _update_state["downloaded"] = downloaded
+        if downloaded == 0:
+            raise ValueError("更新包为空")
+        if declared_total is not None and downloaded != declared_total:
+            raise ValueError("更新包下载不完整")
+        if not secrets.compare_digest(digest.hexdigest(), expected_hash):
+            raise ValueError("更新包 SHA-256 校验失败")
+        return temp_path
+    except Exception:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _batch_quote(value: Path | str) -> str:
+    return f'"{str(value).replace("%", "%%")}"'
+
+
+def _build_update_batch(temp_exe: Path, new_exe: Path, current_exe: Path, health_file: Path) -> str:
+    lines = [
+        "@echo off",
+        "setlocal",
+        "timeout /t 2 /nobreak > nul",
+        f"move /y {_batch_quote(temp_exe)} {_batch_quote(new_exe)} > nul",
+        "if errorlevel 1 goto cleanup",
+        f"start \"\" {_batch_quote(new_exe)} --update-health-file {_batch_quote(health_file)}",
+        "for /l %%i in (1,1,30) do (",
+        "  timeout /t 1 /nobreak > nul",
+        f"  if exist {_batch_quote(health_file)} goto healthy",
+        ")",
+        "goto cleanup",
+        ":healthy",
+        f"del /q {_batch_quote(health_file)} > nul 2>&1",
+    ]
+    if current_exe != new_exe:
+        lines.append(f"del /q {_batch_quote(current_exe)} > nul 2>&1")
+    lines.extend((":cleanup", 'del "%~f0"'))
+    return "\r\n".join(lines) + "\r\n"
 
 
 def check_for_update() -> dict:
@@ -114,13 +233,14 @@ def check_for_update() -> dict:
     if latest_tag and not re.fullmatch(r"[\d.]+", latest_tag):
         raise ValueError(f"非法版本号格式: {latest_tag!r}")
     assets = data.get("assets", [])
-    download_url = _release_asset_download_url(assets, latest_tag)
+    download_url, checksum_url = _release_asset_urls(assets, latest_tag)
     has_update = bool(latest_tag) and _parse_version(latest_tag) > _parse_version(APP_VERSION)
     result = {
         "current": APP_VERSION,
         "latest": latest_tag,
         "hasUpdate": has_update,
         "downloadUrl": download_url if has_update else None,
+        "checksumUrl": checksum_url if has_update else None,
     }
     _latest_release = result
     return result
@@ -130,49 +250,32 @@ def start_update() -> None:
     global _update_state
     if _update_state["status"] == "downloading":
         return
-    if not _latest_release or not _latest_release.get("downloadUrl"):
+    release = dict(_latest_release or {})
+    if not release:
         raise ValueError("请先检查更新")
+    if not release.get("downloadUrl") or not release.get("checksumUrl"):
+        raise ValueError("该版本缺少安装包或 SHA-256 校验文件，请前往 GitHub 手动下载")
     if not getattr(sys, "frozen", False):
         raise ValueError("只有打包后的 EXE 才支持自动更新，请前往 GitHub 手动下载")
-    download_url: str = _latest_release["downloadUrl"]
-    _allowed_download_hosts = ("https://github.com/", "https://objects.githubusercontent.com/")
-    if not any(download_url.startswith(p) for p in _allowed_download_hosts):
-        raise ValueError(f"非法下载地址: {download_url!r}")
+    download_url = _validate_update_url(str(release["downloadUrl"]), "下载地址")
+    checksum_url = _validate_update_url(str(release["checksumUrl"]), "校验文件地址")
+    latest_tag = str(release.get("latest", ""))
+    if not re.fullmatch(r"[\d.]+", latest_tag):
+        raise ValueError(f"非法版本号格式: {latest_tag!r}")
+    expected_filename = f"LeyLineBook-v{latest_tag}-Windows-x64.exe"
     current_exe = Path(sys.executable).resolve()
     _update_state = {"status": "downloading", "downloaded": 0, "total": 0, "error": ""}
 
     def _run() -> None:
         global _update_state
+        temp_exe: Path | None = None
         try:
-            temp_exe = Path(tempfile.gettempdir()) / "LeyLineBook-update.exe"
-            req = urllib.request.Request(download_url, headers={"User-Agent": f"LeyLineBook/{APP_VERSION}"})
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                _update_state["total"] = total
-                downloaded = 0
-                with open(temp_exe, "wb") as f:
-                    while True:
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        _update_state["downloaded"] = downloaded
-            latest_tag = _latest_release["latest"]
-            new_exe = current_exe.parent / f"LeyLineBook-v{latest_tag}-Windows-x64.exe"
-            bat_path = Path(tempfile.gettempdir()) / "leylinebook_update.bat"
-            delete_old = (
-                f'if /i not "{current_exe}" == "{new_exe}" del "{current_exe}"\r\n'
-                if current_exe != new_exe else ""
-            )
+            temp_exe = _download_verified_update(download_url, checksum_url, expected_filename)
+            new_exe = current_exe.parent / expected_filename
+            health_file = Path(tempfile.gettempdir()) / f"LeyLineBook-update-health-{secrets.token_hex(8)}.ok"
+            bat_path = Path(tempfile.gettempdir()) / f"leylinebook_update-{secrets.token_hex(8)}.bat"
             bat_path.write_text(
-                "@echo off\r\n"
-                "timeout /t 2 /nobreak > nul\r\n"
-                f'move /y "{temp_exe}" "{new_exe}"\r\n'
-                f'start "" "{new_exe}"\r\n'
-                + delete_old +
-                'del "%~f0"\r\n',
-                encoding="mbcs",
+                _build_update_batch(temp_exe, new_exe, current_exe, health_file), encoding="mbcs"
             )
             _update_state["status"] = "done"
             time.sleep(0.4)
@@ -184,6 +287,8 @@ def start_update() -> None:
             time.sleep(0.6)
             os._exit(0)
         except Exception as exc:
+            if temp_exe is not None:
+                temp_exe.unlink(missing_ok=True)
             _update_state["status"] = "error"
             _update_state["error"] = str(exc)
 
@@ -1297,25 +1402,54 @@ def reset_database() -> None:
 def build_backup_payload() -> dict:
     with db_connection() as connection:
         return {
+            "format": BACKUP_FORMAT,
+            "schemaVersion": BACKUP_SCHEMA_VERSION,
+            "appVersion": APP_VERSION,
             "exportedAt": now_text(),
-            "accounts": [
-                {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
-                for row in connection.execute("SELECT * FROM accounts")
-            ],
-            "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
-            "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
-            "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
-            "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
-            "carePlans": [row_to_dict(row) for row in connection.execute("SELECT * FROM care_plans")],
-            "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
+            "data": {
+                "accounts": [
+                    {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
+                    for row in connection.execute("SELECT * FROM accounts")
+                ],
+                "tasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM tasks")],
+                "records": [row_to_dict(row) for row in connection.execute("SELECT * FROM task_records")],
+                "storyTasks": [row_to_dict(row) for row in connection.execute("SELECT * FROM story_tasks")],
+                "customTags": [row_to_dict(row) for row in connection.execute("SELECT * FROM custom_task_tags")],
+                "carePlans": [row_to_dict(row) for row in connection.execute("SELECT * FROM care_plans")],
+                "groupNotes": [row_to_dict(row) for row in connection.execute("SELECT * FROM account_group_notes")],
+            },
         }
+
+
+def _normalize_backup_payload(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    if "schemaVersion" not in payload and isinstance(payload.get("accounts"), list):
+        data = payload
+    else:
+        if payload.get("format") != BACKUP_FORMAT:
+            raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+        if payload.get("schemaVersion") != BACKUP_SCHEMA_VERSION:
+            version = payload.get("schemaVersion", "未知")
+            raise ValueError(f"不支持的备份版本：{version}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+
+    for key in ("accounts", "tasks", "records", "storyTasks", "customTags", "carePlans", "groupNotes"):
+        rows = data.get(key, [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    if not isinstance(data.get("accounts"), list):
+        raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    return data
 
 
 def _write_pre_import_snapshot() -> None:
     snapshot = build_backup_payload()
-    if not snapshot["accounts"] and not snapshot["records"]:
+    if not snapshot["data"]["accounts"] and not snapshot["data"]["records"]:
         return
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = DB_PATH.parent / f"pre-import-{stamp}.json"
     path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
     old = sorted(DB_PATH.parent.glob("pre-import-*.json"))
@@ -1324,8 +1458,7 @@ def _write_pre_import_snapshot() -> None:
 
 
 def import_backup(payload: dict) -> None:
-    if not isinstance(payload.get("accounts"), list):
-        raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+    data = _normalize_backup_payload(payload)
     _write_pre_import_snapshot()
     with db_connection() as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
@@ -1340,7 +1473,7 @@ def import_backup(payload: dict) -> None:
         task_map: dict[str, int] = {}
         key = lambda v: None if v is None else str(v)
 
-        for row in payload.get("accounts", []):
+        for row in data.get("accounts", []):
             cur = connection.execute(
                 "INSERT INTO accounts(name,owner,notes,proxy_until,active,deleted,sort_order,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 (row.get("name", ""), row.get("owner", ""), row.get("notes", ""),
@@ -1349,7 +1482,7 @@ def import_backup(payload: dict) -> None:
             )
             if row.get("id") is not None:
                 acc_map[key(row.get("id"))] = cur.lastrowid
-        for row in payload.get("customTags", []):
+        for row in data.get("customTags", []):
             cur = connection.execute(
                 "INSERT INTO custom_task_tags(name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?)",
                 (row.get("name"), row.get("category", "大活动"),
@@ -1357,12 +1490,12 @@ def import_backup(payload: dict) -> None:
             )
             if row.get("id") is not None:
                 tag_map[key(row.get("id"))] = cur.lastrowid
-        for row in payload.get("carePlans", []):
+        for row in data.get("carePlans", []):
             connection.execute(
                 "INSERT OR IGNORE INTO care_plans(name,tasks,created_at) VALUES(?,?,?)",
                 (row.get("name"), row.get("tasks", "[]"), row.get("created_at", now_text())),
             )
-        for row in payload.get("tasks", []):
+        for row in data.get("tasks", []):
             cur = connection.execute(
                 "INSERT INTO tasks(account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (acc_map.get(key(row.get("account_id"))), row.get("name", ""),
@@ -1373,7 +1506,7 @@ def import_backup(payload: dict) -> None:
             )
             if row.get("id") is not None:
                 task_map[key(row.get("id"))] = cur.lastrowid
-        for row in payload.get("records", []):
+        for row in data.get("records", []):
             task_new = task_map.get(key(row.get("task_id")))
             if task_new is None:
                 continue
@@ -1382,7 +1515,7 @@ def import_backup(payload: dict) -> None:
                 (task_new, row.get("task_date", ""),
                  row.get("completed_at", now_text()), row.get("previous_next_due"), row.get("note", "")),
             )
-        for row in payload.get("storyTasks", []):
+        for row in data.get("storyTasks", []):
             connection.execute(
                 "INSERT INTO story_tasks(account_id,owner_name,name,task_type,has_bonus,bonus_deadline,completed_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                 (acc_map.get(key(row.get("account_id"))), row.get("owner_name", ""),
@@ -1390,7 +1523,7 @@ def import_backup(payload: dict) -> None:
                  row.get("bonus_deadline"), row.get("completed_at"), row.get("active", 1),
                  row.get("created_at", now_text())),
             )
-        for row in payload.get("groupNotes", []):
+        for row in data.get("groupNotes", []):
             acc_new = acc_map.get(key(row.get("account_id")))
             if acc_new is None:
                 continue
@@ -1935,12 +2068,24 @@ class RequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format_string: str, *args) -> None:
         print(f"[{self.log_date_time_string()}] {format_string % args}")
 
+    def send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+            "form-action 'self'; frame-ancestors 'none'; worker-src 'self'",
+        )
+
     def send_json(self, data, status: int = HTTPStatus.OK) -> None:
         body = json.dumps({"success": True, "data": data}, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -1949,6 +2094,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -2193,6 +2340,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", f"{content_type}; charset=utf-8" if content_type.startswith("text/") else content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -2260,7 +2408,24 @@ def launch_window(url: str) -> bool:
         return False
 
 
-def run_server(port: int, mode: str) -> None:
+def _write_update_health_file(value: str | None) -> None:
+    if not value:
+        return
+    candidate = Path(value)
+    expected_name = re.fullmatch(r"LeyLineBook-update-health-[0-9a-f]{16}\.ok", candidate.name)
+    if not candidate.is_absolute() or not expected_name:
+        raise ValueError("更新健康检查文件路径无效")
+    if candidate.parent.resolve() != Path(tempfile.gettempdir()).resolve():
+        raise ValueError("更新健康检查文件路径无效")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    descriptor = os.open(candidate, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as health:
+        health.write(b"ready\n")
+
+
+def run_server(port: int, mode: str, update_health_file: str | None = None) -> None:
     if sys.stdout is None:
         sys.stdout = LOG_PATH.open("a", encoding="utf-8")
     if sys.stderr is None:
@@ -2269,6 +2434,7 @@ def run_server(port: int, mode: str) -> None:
     server, port = create_http_server(port)
     url = f"http://127.0.0.1:{port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    _write_update_health_file(update_health_file)
     print(f"LeyLineBook / 地脉簿已启动：{url}（模式：{mode}）")
     sys.stdout.flush()
 
@@ -2325,6 +2491,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=int(os.environ.get("TASK_RECORDER_PORT", "8765")))
     parser.add_argument("--browser", action="store_true", help="使用系统浏览器打开界面（旧模式）")
     parser.add_argument("--no-browser", action="store_true", help="仅启动后台服务，不打开界面")
+    parser.add_argument("--update-health-file", help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     if arguments.no_browser:
         startup_mode = "headless"
@@ -2334,4 +2501,4 @@ if __name__ == "__main__":
         startup_mode = "window"
     if is_already_running(arguments.port):
         stop_running_server(arguments.port)
-    run_server(arguments.port, startup_mode)
+    run_server(arguments.port, startup_mode, arguments.update_health_file)

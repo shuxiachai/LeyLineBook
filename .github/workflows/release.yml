@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          npm ci
+
+      - name: Validate release version
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if ($env:TAG_NAME -notmatch '^v(\d+\.\d+\.\d+)$') { throw "Release tag must use vX.Y.Z." }
+          $tagVersion = $Matches[1]
+          $source = Get-Content -LiteralPath "app.py" -Raw
+          if ($source -notmatch 'APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"') { throw "APP_VERSION was not found." }
+          if ($Matches[1] -ne $tagVersion) { throw "Tag version and APP_VERSION do not match." }
+          $pwaSource = Get-Content -LiteralPath "static\local-backend.js" -Raw
+          if ($pwaSource -notmatch 'const APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"') { throw "PWA APP_VERSION was not found." }
+          if ($Matches[1] -ne $tagVersion) { throw "Tag version and PWA APP_VERSION do not match." }
+          "RELEASE_VERSION=$tagVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ASSET_NAME=LeyLineBook-v$tagVersion-Windows-x64.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Run test suites
+        run: |
+          python -m unittest discover -s tests -p "test_*.py"
+          npm test
+          python -m py_compile app.py
+          node --check static/app.js
+          node --check static/local-backend.js
+          node --check static/sw.js
+
+      - name: Build Windows executable
+        run: pyinstaller --noconfirm --clean LeyLineBook.spec
+
+      - name: Smoke-test packaged executable
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath ".\dist\LeyLineBook.exe" -ArgumentList @("--no-browser", "--port", "18765") -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($process.HasExited) { break }
+              try {
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/state" -TimeoutSec 2
+                if ($response.success) { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "Packaged executable did not become healthy." }
+            Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/shutdown" -Method Post -ContentType "application/json" -Body "{}" | Out-Null
+            $process.WaitForExit(10000) | Out-Null
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Name asset and create SHA-256 file
+        shell: pwsh
+        run: |
+          $assetPath = Join-Path "dist" $env:ASSET_NAME
+          Move-Item -LiteralPath "dist\LeyLineBook.exe" -Destination $assetPath
+          $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $env:ASSET_NAME" | Set-Content -LiteralPath "$assetPath.sha256" -Encoding ascii -NoNewline
+
+      - name: Publish GitHub Release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          $assetPath = Join-Path "dist" $env:ASSET_NAME
+          gh release view $env:TAG_NAME *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG_NAME $assetPath "$assetPath.sha256" --clobber
+          } else {
+            gh release create $env:TAG_NAME $assetPath "$assetPath.sha256" --verify-tag --generate-notes --title "LeyLineBook $env:TAG_NAME"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed." }

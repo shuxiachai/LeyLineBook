@@ -18,6 +18,12 @@ const SOURCE = fs.readFileSync(
   path.join(__dirname, "..", "static", "local-backend.js"),
   "utf8"
 );
+const PYTHON_SOURCE = fs.readFileSync(path.join(__dirname, "..", "app.py"), "utf8");
+const DESKTOP_VERSION = PYTHON_SOURCE.match(/APP_VERSION\s*=\s*"(\d+\.\d+\.\d+)"/)?.[1];
+const SCHEDULING_CASES = JSON.parse(fs.readFileSync(
+  path.join(__dirname, "fixtures", "scheduling_cases.json"),
+  "utf8"
+));
 // eslint-disable-next-line no-eval -- local-backend.js 是浏览器脚本，无法直接 require
 eval(SOURCE);
 
@@ -26,6 +32,50 @@ assert.ok(BE, "LOCAL_BACKEND 未激活，local-backend.js 的域名门控逻辑�
 
 function api(p, method, body) {
   return BE.handle(p, { method, body: body ? JSON.stringify(body) : undefined });
+}
+
+function seedLegacyCredentials() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("leylinebook", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("accounts", { keyPath: "id" });
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction("accounts", "readwrite");
+      transaction.objectStore("accounts").put({
+        id: "legacy-account",
+        name: "旧版凭据号",
+        active: 1,
+        deleted: 0,
+        sort_order: 0,
+        credentials: { username: "plain-user", password: "plain-password", note: "plain-note" },
+      });
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onerror = () => reject(transaction.error);
+    };
+  });
+}
+
+function readRawAccount(id) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("leylinebook");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const getRequest = db.transaction("accounts", "readonly").objectStore("accounts").get(id);
+      getRequest.onsuccess = () => { db.close(); resolve(getRequest.result); };
+      getRequest.onerror = () => { db.close(); reject(getRequest.error); };
+    };
+  });
+}
+
+function simpleBackup(name, id = 1) {
+  return {
+    accounts: [{ id, name, active: 1, deleted: 0, sort_order: 0, created_at: "2026-01-01T00:00:00" }],
+    tasks: [], records: [], customTags: [], carePlans: [], storyTasks: [], groupNotes: [],
+  };
 }
 
 function gameToday() {
@@ -41,6 +91,22 @@ function addDaysStr(s, n) {
   const pad = (x) => String(x).padStart(2, "0");
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
+
+test("PWA v1 升级会清除历史明文凭据并关闭凭据接口", async () => {
+  await seedLegacyCredentials();
+  const backup = await api("/api/export", "GET");
+  const account = await readRawAccount("legacy-account");
+
+  assert.equal(backup.format, "leylinebook-backup");
+  assert.equal(backup.schemaVersion, 2);
+  assert.equal(backup.appVersion, DESKTOP_VERSION, "桌面端与 PWA 版本号应保持一致");
+  assert.equal(Object.hasOwn(account, "credentials"), false, "升级后不应残留 credentials 字段");
+  await assert.rejects(
+    api("/api/accounts/legacy-account/credentials", "GET"),
+    /手机版不保存账号凭据/
+  );
+  await api("/api/reset", "POST", {});
+});
 
 test("local-backend.js 业务逻辑", async (t) => {
   const today = gameToday();
@@ -176,6 +242,71 @@ test("local-backend.js 业务逻辑", async (t) => {
     assert.equal(task.account_id, st.accounts[0].id, "任务外键应重连到重映射后的新账号 id");
   });
 
+  await t.test("新版备份可往返导入，未知版本会被拒绝", async () => {
+    const backup = await BE._debug.buildBackup();
+    assert.equal(backup.format, "leylinebook-backup");
+    assert.equal(backup.schemaVersion, 2);
+    assert.ok(Array.isArray(backup.data.accounts));
+
+    await BE._debug.importBackup(backup);
+    const after = await BE._debug.buildBackup();
+    assert.equal(after.data.accounts[0].name, "老号A");
+    await assert.rejects(
+      BE._debug.importBackup({ ...backup, schemaVersion: 999 }),
+      /不支持的备份版本/
+    );
+  });
+
+  await t.test("备份导入写入失败时整体回滚，保留原有数据", async () => {
+    const before = await BE._debug.buildBackup();
+    const originalPut = IDBObjectStore.prototype.put;
+    let writeCount = 0;
+    IDBObjectStore.prototype.put = function (...args) {
+      writeCount += 1;
+      if (writeCount === 2) throw new Error("模拟导入写入失败");
+      return originalPut.apply(this, args);
+    };
+
+    try {
+      await assert.rejects(
+        BE._debug.importBackup({
+          accounts: [{ id: 1, name: "不应保留的号主", created_at: "2026-01-01T00:00:00" }],
+          tasks: [{ id: 1, account_id: 1, name: "体力", recurrence: "daily", created_at: "2026-01-01T00:00:00" }],
+          records: [],
+          customTags: [],
+          carePlans: [],
+          storyTasks: [],
+        }),
+        /模拟导入写入失败/
+      );
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+
+    const after = await BE._debug.buildBackup();
+    for (const key of ["accounts", "tasks", "records", "storyTasks", "customTags", "carePlans"]) {
+      assert.deepEqual(after.data[key], before.data[key], `${key} 应在失败后保持不变`);
+    }
+  });
+
+  await t.test("导入前快照可恢复，并且最多保留五个", async () => {
+    const before = await api(`/api/state?date=${today}`, "GET");
+    const expectedName = before.accounts[0].name;
+    await api("/api/import", "POST", simpleBackup("临时导入号", 901));
+
+    let snapshots = await api("/api/import-snapshots", "GET");
+    assert.ok(snapshots.length > 0);
+    await api(`/api/import-snapshots/${snapshots[0].id}/restore`, "POST", {});
+    const restored = await api(`/api/state?date=${today}`, "GET");
+    assert.equal(restored.accounts[0].name, expectedName);
+
+    for (let i = 0; i < 6; i += 1) {
+      await api("/api/import", "POST", simpleBackup(`快照轮转${i}`, 1000 + i));
+    }
+    snapshots = await api("/api/import-snapshots", "GET");
+    assert.equal(snapshots.length, 5);
+  });
+
   await t.test("托管方案：建号自动套用方案里的任务", async () => {
     const plan = await api("/api/care-plans", "POST", {
       name: "普托",
@@ -250,11 +381,13 @@ test("local-backend.js 路由覆盖：前端调用的每个接口都能被匹配
     ["GET", "/api/settings"],
     ["GET", "/api/history?end=2026-07-10"],
     ["GET", "/api/export"],
+    ["GET", "/api/import-snapshots"],
     ["GET", "/api/update/check"],
     ["GET", "/api/update/progress"],
     ["GET", "/api/heartbeat"],
     ["GET", "/api/custom-tags"],
     ["POST", "/api/import"],
+    ["POST", "/api/import-snapshots/x/restore"],
     ["POST", "/api/reset"],
     ["POST", "/api/shutdown"],
     ["POST", "/api/accounts"],
@@ -298,4 +431,40 @@ test("local-backend.js 路由覆盖：前端调用的每个接口都能被匹配
       // 其它业务错误（如"没有找到该号主"）说明路由匹配成功，属正常
     }
   }
+});
+
+test("桌面端与 PWA 共用调度场景：PWA 结果符合共享契约", async (t) => {
+  await t.test("每周一 04:00 边界", () => {
+    for (const item of SCHEDULING_CASES.weeklyCases) {
+      const actual = BE._debug.weeklyCycleStart(item.reference, new Date(item.current));
+      assert.equal(actual, item.expected, item.name);
+    }
+  });
+
+  await t.test("42 天版本窗口", () => {
+    for (const item of SCHEDULING_CASES.versionCases) {
+      const actual = BE._debug.versionWindow(SCHEDULING_CASES.versionAnchorDate, item.reference);
+      assert.deepEqual(actual, item.expected, item.reference);
+    }
+  });
+
+  await t.test("到期任务与汇总", async () => {
+    for (const item of SCHEDULING_CASES.stateCases) {
+      await api("/api/import", "POST", {
+        ...SCHEDULING_CASES.stateFixture,
+        records: item.records,
+      });
+      await api("/api/settings/version", "PUT", {
+        versionStartDate: SCHEDULING_CASES.versionAnchorDate,
+      });
+      const current = await api(`/api/state?date=${item.selectedDate}`, "GET");
+      assert.deepEqual(current.dueTasks.map((task) => task.name), item.expected.dueNames, item.name);
+      assert.deepEqual(
+        current.dueTasks.filter((task) => task.completed).map((task) => task.name),
+        item.expected.completedNames,
+        item.name
+      );
+      assert.deepEqual(current.summary, item.expected.summary, item.name);
+    }
+  });
 });

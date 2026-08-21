@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          npm ci
+
+      - name: Run desktop tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Run PWA tests
+        run: npm test
+
+      - name: Check source syntax
+        run: |
+          python -m py_compile app.py
+          node --check static/app.js
+          node --check static/local-backend.js
+          node --check static/sw.js
+
+      - name: Build Windows executable
+        run: pyinstaller --noconfirm --clean LeyLineBook.spec
+
+      - name: Smoke-test packaged executable
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath ".\dist\LeyLineBook.exe" -ArgumentList @("--no-browser", "--port", "18765") -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              if ($process.HasExited) { break }
+              try {
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/state" -TimeoutSec 2
+                if ($response.success) { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "Packaged executable did not become healthy." }
+            Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/shutdown" -Method Post -ContentType "application/json" -Body "{}" | Out-Null
+            $process.WaitForExit(10000) | Out-Null
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+
+      - name: Upload packaged executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: LeyLineBook-Windows-x64
+          path: dist/LeyLineBook.exe
+          if-no-files-found: error
+          retention-days: 7

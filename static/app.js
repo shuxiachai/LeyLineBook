@@ -15,6 +15,7 @@ const state = {
   selectedActivityType: null,
   selectedStoryType: "archon",
 };
+const isPwaMode = Boolean(window.LOCAL_BACKEND);
 
 const recurrenceLabels = {
   daily: "每日",
@@ -687,8 +688,9 @@ function renderAccounts() {
     const dailySection = `<section class="account-task-group"><span class="account-task-group-label">每日</span><div class="tag-list">${renderTaskTags(dailyTaskTagDefinitions)}</div></section>`;
     const abyssSection = `<section class="account-task-group"><span class="account-task-group-label">深渊</span><div class="tag-list">${renderTaskTags(abyssTaskTagDefinitions)}</div></section>`;
     const customSection = customTags.length ? `<section class="account-task-group"><span class="account-task-group-label">活动</span><div class="tag-list">${renderCustomTags()}</div></section>` : "";
+    const credentialsAction = isPwaMode ? "" : `<button class="icon-button" data-credentials-account="${account.id}" title="账号凭据">密</button>`;
     const actions = account.active
-      ? `<button class="icon-button" data-credentials-account="${account.id}" title="账号凭据">密</button><button class="icon-button" data-edit-account="${account.id}" title="编辑号主">✎</button><button class="icon-button" data-delete-account="${account.id}" title="停用号主">✕</button><span class="drag-handle" data-drag-account="${account.id}" role="button" tabindex="0" aria-label="拖动${escapeHtml(account.name)}调整顺序" title="按住拖动调整顺序">↕</span>`
+      ? `${credentialsAction}<button class="icon-button" data-edit-account="${account.id}" title="编辑号主">✎</button><button class="icon-button" data-delete-account="${account.id}" title="停用号主">✕</button><span class="drag-handle" data-drag-account="${account.id}" role="button" tabindex="0" aria-label="拖动${escapeHtml(account.name)}调整顺序" title="按住拖动调整顺序">↕</span>`
       : `<button class="icon-button" data-reactivate-account="${account.id}" title="重新启用">↺</button><button class="icon-button danger" data-purge-account="${account.id}" title="彻底删除号主">␡</button>`;
     const proxyBadge = makeProxyBadge(account.proxy_until);
     return `<article class="account-card account-row${account.active ? "" : " inactive"}" data-account-row="${account.id}"><div class="account-identity"><h3>${escapeHtml(account.name)}</h3>${account.owner ? `<small>${escapeHtml(account.owner)}</small>` : ""}${proxyBadge}</div><div class="account-sections">${dailySection}${customSection}${abyssSection}</div><div class="card-actions">${actions}</div></article>`;
@@ -1226,7 +1228,7 @@ function openAccountDialog(account = null) {
   document.querySelector("#accountNotes").value = account?.notes || "";
   updateProxyDaysLeft();
   const isNew = !account;
-  document.querySelector("#accountCredentialsSection").classList.toggle("hidden", !isNew);
+  document.querySelector("#accountCredentialsSection").classList.toggle("hidden", !isNew || isPwaMode);
   const plans = state.data?.carePlans || [];
   const planField = document.querySelector("#accountPlanField");
   planField.classList.toggle("hidden", !(isNew && plans.length > 0));
@@ -1344,7 +1346,7 @@ async function saveAccount(event) {
     payload.planId = Number(document.querySelector("#accountPlan").value);
   }
   const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-  if (!id) {
+  if (!id && !isPwaMode) {
     const credUsername = document.querySelector("#accountCredUsername").value.trim();
     const credPassword = document.querySelector("#accountCredPassword").value.trim();
     const credNote = document.querySelector("#accountCredNote").value.trim();
@@ -1525,7 +1527,17 @@ async function handleAction(target) {
 
   const credentialsBtn = target.closest("[data-credentials-account]");
   if (credentialsBtn) {
+    if (isPwaMode) {
+      showToast("手机版不保存账号凭据，请在 Windows 版使用此功能");
+      return;
+    }
     await openCredentialsDialog(credentialsBtn.dataset.credentialsAccount);
+    return;
+  }
+
+  const snapshotId = target.closest("[data-restore-snapshot]")?.dataset.restoreSnapshot;
+  if (snapshotId) {
+    await restoreImportSnapshot(snapshotId);
     return;
   }
 
@@ -1696,6 +1708,7 @@ function switchView(view) {
   document.querySelector("#todayControls").classList.toggle("hidden", view !== "today");
   if (view === "history") loadHistory();
   if (view === "guide") initGuideSpy();
+  if (view === "settings" && isPwaMode) loadImportSnapshots().catch((error) => showToast(error.message));
 }
 
 let historyRowsCache = [];
@@ -1751,6 +1764,31 @@ async function exportBackup() {
   showToast("备份已导出");
 }
 
+async function loadImportSnapshots() {
+  if (!isPwaMode) return;
+  const snapshots = await api("/api/import-snapshots");
+  const list = document.querySelector("#importSnapshotList");
+  list.innerHTML = snapshots.length
+    ? snapshots.map((snapshot) => {
+      const createdAt = String(snapshot.createdAt || "").replace("T", " ").replace(/\.\d{3}Z$/, "");
+      return `<div class="snapshot-item"><div><strong>${escapeHtml(createdAt || "导入前快照")}</strong><small>${snapshot.accountCount} 个号主 · ${snapshot.recordCount} 条完成记录</small></div><button type="button" class="button ghost" data-restore-snapshot="${escapeHtml(snapshot.id)}">恢复</button></div>`;
+    }).join("")
+    : '<div class="empty-state">还没有导入前快照。</div>';
+}
+
+async function restoreImportSnapshot(snapshotId) {
+  const confirmed = await confirmAction({
+    title: "恢复导入前快照？",
+    message: "当前数据会先自动保存为一个新快照，然后恢复所选内容。",
+    confirmText: "确认恢复",
+  });
+  if (!confirmed) return;
+  await api(`/api/import-snapshots/${encodeURIComponent(snapshotId)}/restore`, { method: "POST", body: "{}" });
+  await loadState();
+  await loadImportSnapshots();
+  showToast("已恢复导入前的数据");
+}
+
 function renderScheduleSettings() {
   const settings = state.data?.settings;
   if (!settings) return;
@@ -1787,7 +1825,9 @@ async function importBackup(event) {
   }
   const confirmed = await confirmAction({
     title: "导入备份？",
-    message: "当前所有数据将被替换，操作不可撤销。建议先导出当前数据作为备份。账号密码因加密绑定本机，导入后需重新填写。",
+    message: isPwaMode
+      ? "当前数据将被替换；导入前会自动创建可恢复快照。手机版不保存账号密码。"
+      : "当前所有数据将被替换。程序会在本机保留导入前快照；账号密码因加密绑定本机，导入后需重新填写。",
     confirmText: "确认导入",
   });
   if (!confirmed) return;
@@ -1798,6 +1838,7 @@ async function importBackup(event) {
     return;
   }
   await loadState();
+  if (isPwaMode) await loadImportSnapshots();
   showToast("备份已导入");
 }
 
@@ -2116,12 +2157,18 @@ function startHeartbeat() {
   document.addEventListener("visibilitychange", () => { if (!document.hidden) sendHeartbeat(); });
 }
 
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator) || !isPwaMode) return;
+  window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+}
+
 async function initialize() {
   applyTheme(localStorage.getItem("task-recorder-theme") || "green", false, false);
   const now = gameDate();
   document.querySelector("#historyStart").value = "";
   document.querySelector("#historyEnd").value = localDateString(now);
   bindEvents();
+  registerServiceWorker();
   startHeartbeat();
   await initializeCharacterBackground();
   await loadState();

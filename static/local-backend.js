@@ -14,8 +14,13 @@
   "use strict";
 
   const DB_NAME = "leylinebook";
-  const DB_VERSION = 1;
-  const STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks", "app_meta"];
+  const DB_VERSION = 2;
+  const STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks", "app_meta", "backup_snapshots"];
+  const IMPORT_STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks"];
+  const BACKUP_FORMAT = "leylinebook-backup";
+  const BACKUP_SCHEMA_VERSION = 2;
+  const APP_VERSION = "3.0.3";
+  const SNAPSHOT_LIMIT = 5;
 
   const OFFICIAL_VERSION_ANCHOR = "2026-05-20";
   const VERSION_LENGTH_DAYS = 42;
@@ -46,11 +51,10 @@
   // Python weekday(): 周一=0..周日=6
   const pyWeekday = (d) => (d.getDay() + 6) % 7;
 
-  function weeklyCycleStart(refStr) {
+  function weeklyCycleStart(refStr, current = new Date()) {
     const ref = parseDate(refStr);
     let monday = addDays(ref, -pyWeekday(ref));
-    const now = new Date();
-    if (refStr === gameToday() && pyWeekday(ref) === 0 && now.getHours() < 4) {
+    if (refStr === isoDate(current) && pyWeekday(ref) === 0 && current.getHours() < 4) {
       monday = addDays(monday, -7);
     }
     return isoDate(monday);
@@ -92,12 +96,25 @@
     return new Promise((resolve, reject) => {
       if (_db) return resolve(_db);
       const req = indexedDB.open(DB_NAME, DB_VERSION);
-      req.onupgradeneeded = () => {
+      req.onupgradeneeded = (event) => {
         const db = req.result;
         for (const name of STORES) {
           if (!db.objectStoreNames.contains(name)) {
             db.createObjectStore(name, { keyPath: name === "app_meta" ? "key" : "id" });
           }
+        }
+        if (event.oldVersion < 2 && db.objectStoreNames.contains("accounts")) {
+          const cursorRequest = req.transaction.objectStore("accounts").openCursor();
+          cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result;
+            if (!cursor) return;
+            const account = cursor.value;
+            if (Object.prototype.hasOwnProperty.call(account, "credentials")) {
+              delete account.credentials;
+              cursor.update(account);
+            }
+            cursor.continue();
+          };
         }
       };
       req.onsuccess = () => { _db = req.result; resolve(_db); };
@@ -459,37 +476,233 @@
   /* ---------- 备份 导出 / 导入 ---------- */
   async function buildBackup() {
     return {
+      format: BACKUP_FORMAT,
+      schemaVersion: BACKUP_SCHEMA_VERSION,
+      appVersion: APP_VERSION,
       exportedAt: nowText(),
-      accounts: (await getAll("accounts")).map((a) => { const c = { ...a }; delete c.credentials; return c; }),
-      tasks: await getAll("tasks"), records: await getAll("task_records"),
-      storyTasks: await getAll("story_tasks"), customTags: await getAll("custom_task_tags"),
-      carePlans: await getAll("care_plans"), groupNotes: [],
+      data: {
+        accounts: (await getAll("accounts")).map((a) => { const c = { ...a }; delete c.credentials; return c; }),
+        tasks: await getAll("tasks"), records: await getAll("task_records"),
+        storyTasks: await getAll("story_tasks"), customTags: await getAll("custom_task_tags"),
+        carePlans: await getAll("care_plans"), groupNotes: [],
+      },
     };
   }
-  async function importBackup(payload) {
-    if (!payload || !Array.isArray(payload.accounts)) throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
-    // 清空现有（软删除语义在导入场景下直接物理重建，因为是整库替换）
-    for (const store of ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks"]) {
-      await reqP(tx(store, "readwrite").clear());
+
+  function normalizeBackupPayload(payload) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
-    // 整数/旧 ID → UUID 重映射，外键跟着换，为后期同步铺路
-    const idMap = new Map();
-    const mapId = (old) => { if (old == null) return null; const k = `${old}`; if (!idMap.has(k)) idMap.set(k, uuid()); return idMap.get(k); };
-    for (const a of payload.accounts) await reqP(tx("accounts", "readwrite").put({ id: mapId(a.id), name: a.name || "", owner: a.owner || "", notes: a.notes || "", proxy_until: a.proxy_until ?? null, active: a.active ?? 1, deleted: a.deleted ?? 0, sort_order: a.sort_order ?? 0, created_at: a.created_at || nowText(), updated_at: nowText(), credentials: null }));
-    for (const t of payload.customTags || []) await reqP(tx("custom_task_tags", "readwrite").put({ id: mapId(t.id), name: t.name, category: t.category || "大活动", duration_days: t.duration_days ?? 16, start_date: t.start_date ?? null, deleted: t.deleted ?? 0, created_at: t.created_at || nowText(), updated_at: nowText() }));
-    for (const t of payload.tasks || []) await reqP(tx("tasks", "readwrite").put({ id: mapId(t.id), account_id: mapId(t.account_id), name: t.name || "", recurrence: t.recurrence || "daily", interval_days: t.interval_days ?? null, monthly_day: t.monthly_day ?? null, next_due: t.next_due ?? null, notes: t.notes || "", active: t.active ?? 1, deleted: t.deleted ?? 0, sort_order: t.sort_order ?? 0, custom_tag_id: mapId(t.custom_tag_id), created_at: t.created_at || nowText(), updated_at: nowText() }));
-    for (const r of payload.records || []) await reqP(tx("task_records", "readwrite").put({ id: mapId(r.id), task_id: mapId(r.task_id), task_date: r.task_date || "", completed_at: r.completed_at || nowText(), previous_next_due: r.previous_next_due ?? null, note: r.note || "", deleted: 0, created_at: nowText(), updated_at: nowText() }));
-    for (const s of payload.storyTasks || []) await reqP(tx("story_tasks", "readwrite").put({ id: mapId(s.id), account_id: mapId(s.account_id), owner_name: s.owner_name || "", name: s.name || "", task_type: s.task_type || "world", has_bonus: s.has_bonus ?? 0, bonus_deadline: s.bonus_deadline ?? null, completed_at: s.completed_at ?? null, active: s.active ?? 1, deleted: 0, created_at: s.created_at || nowText(), updated_at: nowText() }));
-    for (const p of payload.carePlans || []) await reqP(tx("care_plans", "readwrite").put({ id: mapId(p.id), name: p.name, tasks: p.tasks || "[]", deleted: 0, created_at: p.created_at || nowText(), updated_at: nowText() }));
+    if (payload.schemaVersion == null && Array.isArray(payload.accounts)) return payload;
+    if (payload.format !== BACKUP_FORMAT) {
+      throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
+    }
+    if (payload.schemaVersion !== BACKUP_SCHEMA_VERSION) {
+      throw new Error(`不支持的备份版本：${String(payload.schemaVersion ?? "未知")}`);
+    }
+    if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
+      throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
+    }
+    return payload.data;
+  }
+
+  function getImportRows(payload, key) {
+    const rows = payload[key] ?? [];
+    if (!Array.isArray(rows)) throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
+    if (rows.some((row) => !row || typeof row !== "object" || Array.isArray(row))) {
+      throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
+    }
+    return rows;
+  }
+
+  function createImportIdMap(rows, label) {
+    const ids = new Map();
+    for (const row of rows) {
+      if (row.id == null) throw new Error(`备份中的${label}缺少 ID`);
+      const oldId = String(row.id);
+      if (ids.has(oldId)) throw new Error(`备份中的${label} ID 重复`);
+      ids.set(oldId, uuid());
+    }
+    return ids;
+  }
+
+  function requireMappedId(ids, oldId, label) {
+    if (oldId == null || !ids.has(String(oldId))) throw new Error(`备份中的${label}引用不存在`);
+    return ids.get(String(oldId));
+  }
+
+  function optionalMappedId(ids, oldId, label) {
+    if (oldId == null) return null;
+    return requireMappedId(ids, oldId, label);
+  }
+
+  function prepareBackupImport(payload) {
+    const data = normalizeBackupPayload(payload);
+    if (!Array.isArray(data.accounts)) {
+      throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
+    }
+
+    const source = {
+      accounts: getImportRows(data, "accounts"),
+      tasks: getImportRows(data, "tasks"),
+      task_records: getImportRows(data, "records"),
+      custom_task_tags: getImportRows(data, "customTags"),
+      care_plans: getImportRows(data, "carePlans"),
+      story_tasks: getImportRows(data, "storyTasks"),
+    };
+    const accountIds = createImportIdMap(source.accounts, "号主");
+    const taskIds = createImportIdMap(source.tasks, "任务");
+    const recordIds = createImportIdMap(source.task_records, "完成记录");
+    const tagIds = createImportIdMap(source.custom_task_tags, "活动标签");
+    const planIds = createImportIdMap(source.care_plans, "托管方案");
+    const storyIds = createImportIdMap(source.story_tasks, "剧情任务");
+    const importedAt = nowText();
+
+    return {
+      accounts: source.accounts.map((account) => ({
+        id: accountIds.get(String(account.id)),
+        name: account.name || "",
+        owner: account.owner || "",
+        notes: account.notes || "",
+        proxy_until: account.proxy_until ?? null,
+        active: account.active ?? 1,
+        deleted: account.deleted ?? 0,
+        sort_order: account.sort_order ?? 0,
+        created_at: account.created_at || importedAt,
+        updated_at: importedAt,
+      })),
+      custom_task_tags: source.custom_task_tags.map((tag) => ({
+        id: tagIds.get(String(tag.id)),
+        name: tag.name,
+        category: tag.category || "大活动",
+        duration_days: tag.duration_days ?? 16,
+        start_date: tag.start_date ?? null,
+        deleted: tag.deleted ?? 0,
+        created_at: tag.created_at || importedAt,
+        updated_at: importedAt,
+      })),
+      tasks: source.tasks.map((task) => ({
+        id: taskIds.get(String(task.id)),
+        account_id: requireMappedId(accountIds, task.account_id, "任务号主"),
+        name: task.name || "",
+        recurrence: task.recurrence || "daily",
+        interval_days: task.interval_days ?? null,
+        monthly_day: task.monthly_day ?? null,
+        next_due: task.next_due ?? null,
+        notes: task.notes || "",
+        active: task.active ?? 1,
+        deleted: task.deleted ?? 0,
+        sort_order: task.sort_order ?? 0,
+        custom_tag_id: optionalMappedId(tagIds, task.custom_tag_id, "任务活动标签"),
+        created_at: task.created_at || importedAt,
+        updated_at: importedAt,
+      })),
+      task_records: source.task_records.map((record) => ({
+        id: recordIds.get(String(record.id)),
+        task_id: requireMappedId(taskIds, record.task_id, "完成记录任务"),
+        task_date: record.task_date || "",
+        completed_at: record.completed_at || importedAt,
+        previous_next_due: record.previous_next_due ?? null,
+        note: record.note || "",
+        deleted: 0,
+        created_at: importedAt,
+        updated_at: importedAt,
+      })),
+      story_tasks: source.story_tasks.map((story) => ({
+        id: storyIds.get(String(story.id)),
+        account_id: optionalMappedId(accountIds, story.account_id, "剧情任务号主"),
+        owner_name: story.owner_name || "",
+        name: story.name || "",
+        task_type: story.task_type || "world",
+        has_bonus: story.has_bonus ?? 0,
+        bonus_deadline: story.bonus_deadline ?? null,
+        completed_at: story.completed_at ?? null,
+        active: story.active ?? 1,
+        deleted: 0,
+        created_at: story.created_at || importedAt,
+        updated_at: importedAt,
+      })),
+      care_plans: source.care_plans.map((plan) => ({
+        id: planIds.get(String(plan.id)),
+        name: plan.name,
+        tasks: plan.tasks || "[]",
+        deleted: 0,
+        created_at: plan.created_at || importedAt,
+        updated_at: importedAt,
+      })),
+    };
+  }
+
+  function replaceImportedData(rowsByStore) {
+    const transaction = _db.transaction(IMPORT_STORES, "readwrite");
+    let failure = null;
+
+    return new Promise((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = (event) => { failure = failure || event.target.error || transaction.error; };
+      transaction.onabort = () => reject(failure || transaction.error || new Error("导入失败，原数据已保留"));
+
+      try {
+        // Queue every request synchronously so the browser cannot auto-commit between stores.
+        for (const storeName of IMPORT_STORES) {
+          const store = transaction.objectStore(storeName);
+          store.clear();
+          for (const row of rowsByStore[storeName]) store.put(row);
+        }
+      } catch (error) {
+        failure = error;
+        transaction.abort();
+      }
+    });
+  }
+
+  async function importBackup(payload) {
+    const rowsByStore = prepareBackupImport(payload);
+    await saveImportSnapshot();
+    await replaceImportedData(rowsByStore);
+  }
+
+  let snapshotSequence = 0;
+  async function saveImportSnapshot() {
+    const backup = await buildBackup();
+    if (!backup.data.accounts.length && !backup.data.records.length) return;
+    const createdAt = new Date().toISOString();
+    await putRec("backup_snapshots", {
+      id: uuid(),
+      created_at: createdAt,
+      created_order: Date.now() * 1000 + snapshotSequence++,
+      reason: "pre-import",
+      backup,
+    });
+    const snapshots = (await getAll("backup_snapshots"))
+      .sort((a, b) => (b.created_order || 0) - (a.created_order || 0));
+    for (const stale of snapshots.slice(SNAPSHOT_LIMIT)) await delRec("backup_snapshots", stale.id);
+  }
+
+  async function listImportSnapshots() {
+    return (await getAll("backup_snapshots"))
+      .sort((a, b) => (b.created_order || 0) - (a.created_order || 0))
+      .map((snapshot) => {
+        const data = normalizeBackupPayload(snapshot.backup);
+        return {
+          id: snapshot.id,
+          createdAt: snapshot.created_at,
+          accountCount: Array.isArray(data.accounts) ? data.accounts.length : 0,
+          recordCount: Array.isArray(data.records) ? data.records.length : 0,
+        };
+      });
+  }
+
+  async function restoreImportSnapshot(id) {
+    const snapshot = await getOne("backup_snapshots", id);
+    if (!snapshot) throw new Error("没有找到该导入快照");
+    await importBackup(snapshot.backup);
   }
   async function resetDatabase() { for (const store of STORES) await reqP(tx(store, "readwrite").clear()); }
 
-  /* ---------- 凭据（Web Crypto 暂存明文占位；不参与同步） ---------- */
-  async function getCredentials(id) { const a = await getOne("accounts", id); if (!a) throw new Error("没有找到该号主"); const c = a.credentials; return c ? { username: c.username || "", password: c.password || "", note: c.note || "" } : { username: "", password: "", note: "" }; }
-  async function setCredentials(id, p) {
-    const a = await getOne("accounts", id); if (!a) throw new Error("没有找到该号主");
-    const u = String(p.username || "").trim().slice(0, 200), pw = String(p.password || "").trim().slice(0, 500), note = String(p.note || "").trim().slice(0, 200);
-    a.credentials = (!u && !pw && !note) ? null : { username: u, password: pw, note }; await putRec("accounts", a);
+  /* ---------- 凭据 ---------- */
+  function rejectPwaCredentials() {
+    throw new Error("手机版不保存账号凭据，请在 Windows 版使用此功能");
   }
 
   /* ---------- 路由 ---------- */
@@ -498,11 +711,13 @@
     ["GET", /^\/api\/settings$/, () => getScheduleSettings()],
     ["GET", /^\/api\/history$/, (m, b, q) => listHistory(q)],
     ["GET", /^\/api\/export$/, () => buildBackup()],
+    ["GET", /^\/api\/import-snapshots$/, () => listImportSnapshots()],
     ["GET", /^\/api\/update\/check$/, () => ({ current: "PWA", latest: "PWA", hasUpdate: false, downloadUrl: null })],
     ["GET", /^\/api\/update\/progress$/, () => ({ status: "idle", downloaded: 0, total: 0, error: "" })],
     ["POST", /^\/api\/shutdown$/, () => null],
     ["GET", /^\/api\/heartbeat$/, () => null],
     ["POST", /^\/api\/import$/, (m, b) => importBackup(b)],
+    ["POST", /^\/api\/import-snapshots\/([^/]+)\/restore$/, (m) => restoreImportSnapshot(m[1])],
     ["POST", /^\/api\/reset$/, () => resetDatabase()],
     ["POST", /^\/api\/accounts$/, (m, b) => createAccount(b)],
     ["PUT", /^\/api\/accounts\/([^/]+)$/, (m, b) => updateAccount(m[1], b)],
@@ -512,9 +727,9 @@
     ["POST", /^\/api\/accounts\/reorder$/, (m, b) => reorderAccounts(b)],
     ["POST", /^\/api\/accounts\/([^/]+)\/task-tags$/, (m, b) => setAccountTaskTag(m[1], b)],
     ["POST", /^\/api\/accounts\/([^/]+)\/custom-tags$/, (m, b) => setAccountCustomTag(m[1], b)],
-    ["GET", /^\/api\/accounts\/([^/]+)\/credentials$/, (m) => getCredentials(m[1])],
-    ["PUT", /^\/api\/accounts\/([^/]+)\/credentials$/, (m, b) => setCredentials(m[1], b)],
-    ["DELETE", /^\/api\/accounts\/([^/]+)\/credentials$/, (m) => setCredentials(m[1], {})],
+    ["GET", /^\/api\/accounts\/([^/]+)\/credentials$/, () => rejectPwaCredentials()],
+    ["PUT", /^\/api\/accounts\/([^/]+)\/credentials$/, () => rejectPwaCredentials()],
+    ["DELETE", /^\/api\/accounts\/([^/]+)\/credentials$/, () => rejectPwaCredentials()],
     ["POST", /^\/api\/tasks$/, () => { throw new Error("手机版暂不支持新增自定义任务，请在电脑版配置后导出导入"); }],
     ["PUT", /^\/api\/tasks\/([^/]+)$/, () => { throw new Error("手机版暂不支持编辑自定义任务，请在电脑版修改后导出导入"); }],
     ["DELETE", /^\/api\/tasks\/([^/]+)$/, (m) => archiveTask(m[1])],
@@ -566,7 +781,10 @@
   const host = location.hostname;
   const isServerMode = (host === "127.0.0.1" || host === "localhost") && !location.search.includes("local=1");
   if (!isServerMode) {
-    window.LOCAL_BACKEND = { handle, _debug: { loadState, buildBackup, importBackup } };
+    window.LOCAL_BACKEND = {
+      handle,
+      _debug: { loadState, buildBackup, importBackup, weeklyCycleStart, versionWindow },
+    };
     document.documentElement.classList.add("pwa-mode");
   }
 })();

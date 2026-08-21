@@ -556,6 +556,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .settings-form label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
 .form-hint { margin: -4px 0 14px; padding: 10px 12px; border-radius: 9px; background: var(--green-soft); color: var(--green-dark); font-size: 12px; }
 .settings-card.danger-card .settings-icon { background: var(--danger-icon-bg); color: var(--danger); }
+.snapshot-list { display: grid; gap: 8px; margin-top: 14px; }
+.snapshot-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 0; border-top: 1px solid var(--line); }
+.snapshot-item:first-child { border-top: 0; }
+.snapshot-item > div { min-width: 0; display: grid; gap: 3px; }
+.snapshot-item strong { font-size: 13px; overflow-wrap: anywhere; }
+.snapshot-item small { color: var(--muted); }
 .shutdown-screen { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 24px; background: var(--sidebar-bg); color: var(--sidebar-text); text-align: center; }
 .shutdown-screen h1 { margin-bottom: 10px; }
 .shutdown-screen p { color: var(--sidebar-muted); }
@@ -650,7 +656,11 @@ dialog label { display: grid; gap: 6px; margin-bottom: 14px; color: var(--muted)
   .care-plan-item { flex-wrap: wrap; }
 }
 
-/* PWA（手机网页版）：隐藏无意义的“关闭程序”与“检查更新”卡片 */
+/* PWA（手机网页版）：切换平台专属说明与功能。 */
+.pwa-only { display: none !important; }
+.pwa-mode .pwa-only { display: block !important; }
+.pwa-mode .settings-card.pwa-only { display: grid !important; }
+.pwa-mode .desktop-only { display: none !important; }
 .pwa-mode .settings-card:has(#shutdownApp),
 .pwa-mode .settings-card:has(#checkUpdateBtn) { display: none; }
 
