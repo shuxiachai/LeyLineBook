@@ -19,7 +19,7 @@
   const IMPORT_STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks"];
   const BACKUP_FORMAT = "leylinebook-backup";
   const BACKUP_SCHEMA_VERSION = 2;
-  const APP_VERSION = "3.0.3";
+  const APP_VERSION = "3.0.4";
   const SNAPSHOT_LIMIT = 5;
 
   const OFFICIAL_VERSION_ANCHOR = "2026-05-20";
@@ -40,13 +40,23 @@
   const ACTIVITY_TASK_SORT_ORDER = 6;
   const VALID_DURATIONS = { "大活动": [16, 23], "小活动": [7, 10] };
   const STORY_TASK_TYPES = { archon: "魔神任务", legend: "传说任务", world: "世界任务" };
+  const TASK_RECURRENCES = new Set(["daily", "weekly", "interval", "once", "monthly", "version"]);
 
   /* ---------- 时间 / 游戏日 ---------- */
   const pad = (n) => String(n).padStart(2, "0");
   const isoDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  const parseDate = (s) => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+  function parseDate(value) {
+    const text = String(value || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error("日期格式无效");
+    const [year, month, day] = text.split("-").map(Number);
+    const parsed = new Date(year, month - 1, day);
+    if (isoDate(parsed) !== text) throw new Error("日期格式无效");
+    return parsed;
+  }
   const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+  const calendarDayNumber = (d) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000;
   function gameToday() { const d = new Date(); d.setHours(d.getHours() - 4); return isoDate(d); }
+  function gameDayEnd(refStr) { const d = addDays(parseDate(refStr), 1); d.setHours(4, 0, 0, 0); return d; }
   function nowText() { const d = new Date(); return `${isoDate(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
   // Python weekday(): 周一=0..周日=6
   const pyWeekday = (d) => (d.getDay() + 6) % 7;
@@ -68,7 +78,7 @@
     if (!anchor) return null;
     const anchorD = parseDate(anchor);
     const ref = parseDate(refStr || gameToday());
-    const diffDays = Math.floor((ref - anchorD) / 86400000);
+    const diffDays = calendarDayNumber(ref) - calendarDayNumber(anchorD);
     const cycleOffset = Math.floor(diffDays / VERSION_LENGTH_DAYS);
     const start = addDays(anchorD, cycleOffset * VERSION_LENGTH_DAYS);
     return {
@@ -85,7 +95,25 @@
   function exactDueMoment(value) {
     const text = String(value || "").trim();
     if (!text.includes("T")) return null;
-    return new Date(text);
+    const parsed = new Date(text);
+    if (Number.isNaN(parsed.getTime())) throw new Error("任务到期时间格式无效");
+    return parsed;
+  }
+
+  function optionalLocalDateTime(value, current = new Date()) {
+    const text = String(value || "").trim();
+    if (!text) return null;
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
+    if (!match) throw new Error("使用时间应为本地时间");
+    const day = parseDate(match[1]);
+    const hours = Number(match[2]);
+    const minutes = Number(match[3]);
+    const seconds = Number(match[4] || 0);
+    if (hours > 23 || minutes > 59 || seconds > 59) throw new Error("使用时间格式无效");
+    const parsed = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hours, minutes, seconds);
+    if (parsed > new Date(current.getTime() + 5 * 60000)) throw new Error("使用时间不能晚于当前时间");
+    parsed.setSeconds(0, 0);
+    return parsed;
   }
 
   const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now() + "-" + Math.random().toString(16).slice(2));
@@ -128,11 +156,54 @@
   async function putRec(store, rec) { rec.updated_at = nowText(); await reqP(tx(store, "readwrite").put(rec)); return rec; }
   const delRec = (store, id) => reqP(tx(store, "readwrite").delete(id));
 
+  function runAtomic(storeNames, queueRequests) {
+    return new Promise((resolve, reject) => {
+      const transaction = _db.transaction(storeNames, "readwrite");
+      let failure = null;
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = (event) => { failure = failure || event.target.error || transaction.error; };
+      transaction.onabort = () => reject(failure || transaction.error || new Error("本地数据写入失败"));
+      try {
+        queueRequests(transaction);
+      } catch (error) {
+        failure = error;
+        transaction.abort();
+      }
+    });
+  }
+
+  function applyBatch({ puts = {}, deletes = {}, clears = [] }) {
+    const storeNames = [...new Set([...Object.keys(puts), ...Object.keys(deletes), ...clears])];
+    if (!storeNames.length) return Promise.resolve();
+    const updatedAt = nowText();
+    return runAtomic(storeNames, (transaction) => {
+      for (const storeName of clears) transaction.objectStore(storeName).clear();
+      for (const [storeName, records] of Object.entries(puts)) {
+        const store = transaction.objectStore(storeName);
+        for (const record of records) {
+          record.updated_at = updatedAt;
+          store.put(record);
+        }
+      }
+      for (const [storeName, ids] of Object.entries(deletes)) {
+        const store = transaction.objectStore(storeName);
+        for (const id of ids) store.delete(id);
+      }
+    });
+  }
+
   async function metaGet(key, fallback) { const r = await getOne("app_meta", key); return r ? r.value : fallback; }
   async function metaSet(key, value) { await reqP(tx("app_meta", "readwrite").put({ key, value })); }
 
   const liveAccounts = (rows) => rows.filter((a) => !a.deleted);
   const activeTasks = (rows) => rows.filter((t) => t.active && !t.deleted);
+  const canonicalName = (value) => String(value || "").trim().toLocaleLowerCase();
+  function ensureUniqueName(rows, name, excludeId = null, ignoreDeleted = false) {
+    const wanted = canonicalName(name);
+    if (rows.some((row) => row.id !== excludeId && (!ignoreDeleted || !row.deleted) && canonicalName(row.name) === wanted)) {
+      throw new Error("名称已存在");
+    }
+  }
 
   async function getVersionAnchor() {
     let a = await metaGet("version_anchor_date", null);
@@ -147,6 +218,7 @@
 
   /* ---------- load_state（读路径核心） ---------- */
   async function loadState(selectedDate) {
+    parseDate(selectedDate);
     const accountsRaw = await getAll("accounts");
     const accounts = liveAccounts(accountsRaw).map((a) => { const c = { ...a }; delete c.credentials; return c; })
       .sort((x, y) => (Number(!x.active) - Number(!y.active)) || (x.sort_order - y.sort_order));
@@ -170,8 +242,10 @@
 
     const settings = await getScheduleSettings();
     const warWindow = versionWindow(settings.versionAnchorDate, selectedDate);
-    const today = gameToday();
-    const selectedCutoff = selectedDate === today ? new Date() : new Date(selectedDate + "T23:59:59.999");
+    const now = new Date();
+    const nowMs = now.getTime();
+    const isCurrentGameDay = selectedDate === gameToday();
+    const selectedGameDayEnd = gameDayEnd(selectedDate);
     const selectedWeekKey = weeklyCycleKey(selectedDate);
 
     const recByTaskDateNote = new Map();
@@ -179,8 +253,13 @@
     const completedThisDate = (taskId) => recByTaskDateNote.has(`${taskId}|${selectedDate}|`);
     const everCompleted = new Set(records.map((r) => r.task_id));
 
-    const completedWeekly = new Map(); // task_id -> task_date（该周完成记录）
-    for (const r of records) if (r.note === selectedWeekKey) completedWeekly.set(r.task_id, r.task_date);
+    const completedWeekly = new Set();
+    const completedWeeklyOnSelected = new Set();
+    for (const r of records) {
+      if (r.note !== selectedWeekKey) continue;
+      completedWeekly.add(r.task_id);
+      if (r.task_date === selectedDate) completedWeeklyOnSelected.add(r.task_id);
+    }
 
     const prevDay = isoDate(addDays(parseDate(selectedDate), -1));
     const prevDayFood = new Map();
@@ -199,7 +278,6 @@
     const completedVersion = new Set();
     for (const r of records) if (r.task_date >= warWindow.eventStart && r.task_date <= warWindow.eventEnd) completedVersion.add(r.task_id);
 
-    const nowMs = Date.now();
     const dueTasks = [];
     const allTasks = [];
     for (const raw of tasks) {
@@ -213,7 +291,7 @@
         dueTasks.push(task);
       } else if (rec === "weekly") {
         const weekDone = completedWeekly.has(task.id);
-        const doneOnSelected = completedWeekly.get(task.id) === selectedDate;
+        const doneOnSelected = completedWeeklyOnSelected.has(task.id);
         task.completed = doneOnSelected;
         task.event_end = isoDate(addDays(parseDate(weeklyCycleStart(selectedDate)), 7));
         task.event_end_time = "04:00";
@@ -224,12 +302,14 @@
           const pd = parseDate(task.next_due); const potDue = new Date(pd.getFullYear(), pd.getMonth(), pd.getDate(), 4, 0);
           if (potDue.getTime() > nowMs) preciseDue = potDue;
         }
-        const isDue = task.next_due && (preciseDue ? preciseDue <= selectedCutoff : task.next_due <= selectedDate);
+        const isDue = task.next_due && (preciseDue
+          ? (isCurrentGameDay ? preciseDue <= now : preciseDue < selectedGameDayEnd)
+          : task.next_due <= selectedDate);
         if (preciseDue) {
           task.available_at = `${isoDate(preciseDue)}T${pad(preciseDue.getHours())}:${pad(preciseDue.getMinutes())}`;
           task.cooldown_remaining_seconds = Math.max(0, Math.floor((preciseDue.getTime() - nowMs) / 1000));
         }
-        const stillCooling = preciseDue && preciseDue.getTime() > nowMs;
+        const stillCooling = isCurrentGameDay && preciseDue && preciseDue.getTime() > nowMs;
         if (task.completed || isDue || stillCooling) dueTasks.push(task);
       } else if (rec === "monthly") {
         const show = (task.completed || (task.next_due && task.next_due <= selectedDate)) && (!completedMonthly.has(task.id) || task.completed);
@@ -250,9 +330,7 @@
       }
     }
 
-    const nextDay = addDays(parseDate(gameToday()), 1);
-    const endOfGameToday = new Date(nextDay.getFullYear(), nextDay.getMonth(), nextDay.getDate(), 4, 0);
-    const longCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= endOfGameToday;
+    const longCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= selectedGameDayEnd;
     const countable = dueTasks.filter((t) => !longCooling(t));
     const completedCount = countable.filter((t) => t.completed).length;
     const DAILY_CATEGORY = new Set(["体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"]);
@@ -269,103 +347,182 @@
   }
 
   /* ---------- 完成 / 撤销 ---------- */
-  async function insertPresetTask(accountId, taskName, notes) {
+  async function buildPresetTask(accountId, taskName, notes) {
     const preset = TASK_PRESETS[taskName];
     let nextDue = null;
     if (preset.recurrence === "interval") nextDue = gameToday();
     else if (preset.recurrence === "monthly") nextDue = monthlyOccurrence(gameToday(), preset.monthly_day);
     else if (preset.recurrence === "version") { const w = versionWindow(await getVersionAnchor()); nextDue = w ? w.eventStart : null; }
-    return putRec("tasks", {
+    return {
       id: uuid(), account_id: accountId, name: taskName, recurrence: preset.recurrence,
       interval_days: preset.interval_days || null, monthly_day: preset.monthly_day || null,
       next_due: nextDue, notes: notes || "", active: 1, deleted: 0,
       sort_order: TASK_SORT_ORDER[taskName] || 0, custom_tag_id: null, created_at: nowText(),
-    });
+    };
+  }
+
+  async function insertPresetTask(accountId, taskName, notes) {
+    return putRec("tasks", await buildPresetTask(accountId, taskName, notes));
   }
 
   function expeditionHours(notes) { return String(notes || "").split(/[、,，]/).some((p) => p.trim() === "派遣:15小时") ? 15 : 20; }
 
-  async function toggleTask(taskId, taskDate, completed, usedAt, restartCycle) {
-    const task = await getOne("tasks", taskId);
-    if (!task || !task.active || task.deleted) throw new Error("没有找到该任务");
-    const records = await getAll("task_records");
+  function prepareTaskToggle(taskRow, records, taskDate, completed, usedAt, restartCycle) {
+    parseDate(taskDate);
+    if (!taskRow || !taskRow.active || taskRow.deleted) throw new Error("没有找到该任务");
+    const task = { ...taskRow };
     const cycleKey = task.recurrence === "weekly" ? weeklyCycleKey(taskDate) : "";
     const match = task.recurrence === "weekly"
-      ? records.find((r) => r.task_id === taskId && r.note === cycleKey)
-      : records.find((r) => r.task_id === taskId && r.task_date === taskDate && (r.note || "") === "");
+      ? records.find((r) => r.task_id === task.id && r.note === cycleKey)
+      : records.find((r) => r.task_id === task.id && r.task_date === taskDate && (r.note || "") === "");
+    const mutation = { task: null, record: null, deleteRecordId: null };
 
     if (completed && !match) {
       const previousDue = task.next_due;
       let preciseUsed = null;
       if ((task.name === "质变仪" || task.name === "探索派遣") && task.recurrence === "interval") {
-        preciseUsed = usedAt ? new Date(usedAt) : (() => { const d = new Date(); d.setSeconds(0, 0); return d; })();
+        preciseUsed = optionalLocalDateTime(usedAt) || (() => { const d = new Date(); d.setSeconds(0, 0); return d; })();
       }
       const completedAt = preciseUsed ? `${isoDate(preciseUsed)}T${pad(preciseUsed.getHours())}:${pad(preciseUsed.getMinutes())}:00` : nowText();
-      await putRec("task_records", { id: uuid(), task_id: taskId, task_date: taskDate, completed_at: completedAt, previous_next_due: previousDue, note: cycleKey, deleted: 0, created_at: nowText() });
+      mutation.record = { id: uuid(), task_id: task.id, task_date: taskDate, completed_at: completedAt, previous_next_due: previousDue, note: cycleKey, deleted: 0, created_at: nowText() };
 
       if (task.recurrence === "interval") {
         let nextDue;
-        if (preciseUsed && task.name === "质变仪") { const n = new Date(preciseUsed.getTime() + 24 * task.interval_days * 3600000); nextDue = `${isoDate(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`; }
+        if (preciseUsed && task.name === "质变仪") {
+          const intervalDays = Number(task.interval_days);
+          if (!Number.isInteger(intervalDays) || intervalDays < 1) throw new Error("任务冷却天数未配置，请检查任务设置");
+          const n = new Date(preciseUsed.getTime() + 24 * intervalDays * 3600000); nextDue = `${isoDate(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`;
+        }
         else if (preciseUsed && task.name === "探索派遣") { const n = new Date(preciseUsed.getTime() + expeditionHours(task.notes) * 3600000); nextDue = `${isoDate(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`; }
         else {
-          if (!task.interval_days) throw new Error("任务冷却天数未配置，请检查任务设置");
+          const intervalDays = Number(task.interval_days);
+          if (!Number.isInteger(intervalDays) || intervalDays < 1) throw new Error("任务冷却天数未配置，请检查任务设置");
           const base = restartCycle ? parseDate(taskDate) : new Date(Math.max(parseDate(previousDue || taskDate), parseDate(taskDate)));
-          nextDue = isoDate(addDays(base, task.interval_days));
+          nextDue = isoDate(addDays(base, intervalDays));
         }
-        task.next_due = nextDue; await putRec("tasks", task);
+        task.next_due = nextDue; mutation.task = task;
       } else if (task.recurrence === "monthly") {
+        const monthlyDay = Number(task.monthly_day);
+        if (!Number.isInteger(monthlyDay) || monthlyDay < 1 || monthlyDay > 28) throw new Error("每月刷新日期配置无效");
         const base = new Date(Math.max(parseDate(previousDue || taskDate), parseDate(taskDate)));
         const baseStr = isoDate(base);
-        task.next_due = base.getDate() < task.monthly_day ? monthlyOccurrence(baseStr, task.monthly_day) : nextMonthOccurrence(baseStr, task.monthly_day);
-        await putRec("tasks", task);
-      } else if (task.recurrence === "version") { task.next_due = null; await putRec("tasks", task); }
+        task.next_due = base.getDate() < monthlyDay ? monthlyOccurrence(baseStr, monthlyDay) : nextMonthOccurrence(baseStr, monthlyDay);
+        mutation.task = task;
+      } else if (task.recurrence === "version") { task.next_due = null; mutation.task = task; }
     } else if (!completed && match) {
-      if (["interval", "monthly", "version"].includes(task.recurrence)) { task.next_due = match.previous_next_due; await putRec("tasks", task); }
-      await delRec("task_records", match.id);
+      if (["interval", "monthly", "version"].includes(task.recurrence)) { task.next_due = match.previous_next_due; mutation.task = task; }
+      mutation.deleteRecordId = match.id;
     }
+    return mutation;
   }
 
-  async function completeAll(taskDate, taskIds) { for (const id of taskIds) await toggleTask(id, taskDate, true); }
+  async function applyTaskMutations(mutations) {
+    const taskPuts = mutations.filter((item) => item.task).map((item) => item.task);
+    const recordPuts = mutations.filter((item) => item.record).map((item) => item.record);
+    const recordDeletes = mutations.filter((item) => item.deleteRecordId).map((item) => item.deleteRecordId);
+    await applyBatch({
+      puts: { tasks: taskPuts, task_records: recordPuts },
+      deletes: { task_records: recordDeletes },
+    });
+  }
+
+  async function toggleTask(taskId, taskDate, completed, usedAt, restartCycle) {
+    const task = await getOne("tasks", taskId);
+    if (!task || !task.active || task.deleted) throw new Error("没有找到该任务");
+    const records = await getAll("task_records");
+    await applyTaskMutations([prepareTaskToggle(task, records, taskDate, completed, usedAt, restartCycle)]);
+  }
+
+  async function completeAll(taskDate, taskIds) {
+    if (!Array.isArray(taskIds)) throw new Error("任务列表格式无效");
+    parseDate(taskDate);
+    const ids = [...new Set(taskIds)];
+    const tasksById = new Map((await getAll("tasks")).map((task) => [task.id, task]));
+    const records = await getAll("task_records");
+    const mutations = [];
+    for (const id of ids) {
+      const task = tasksById.get(id);
+      if (!task || !task.active || task.deleted) throw new Error("没有找到该任务");
+      const mutation = prepareTaskToggle(task, records, taskDate, true);
+      mutations.push(mutation);
+      if (mutation.record) records.push(mutation.record);
+    }
+    await applyTaskMutations(mutations);
+  }
 
   /* ---------- 号主 ---------- */
-  function parseProxyUntil(p) { const raw = String((p && p.proxyUntil) || "").trim(); if (!raw) return null; if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new Error("截止日期格式无效"); return raw; }
+  function parseProxyUntil(p) {
+    const raw = String((p && p.proxyUntil) || "").trim();
+    if (!raw) return null;
+    try { parseDate(raw); } catch { throw new Error("截止日期格式无效"); }
+    return raw;
+  }
   async function createAccount(p) {
     const name = String(p.name || "").trim(); if (!name) throw new Error("请填写号主名称");
+    if (name.length > 100) throw new Error("号主名称不能超过 100 个字符");
     const accounts = await getAll("accounts");
+    ensureUniqueName(accounts, name);
     const maxOrder = accounts.reduce((m, a) => Math.max(m, a.sort_order || 0), 0);
-    const acc = await putRec("accounts", { id: uuid(), name: name.slice(0, 100), owner: String(p.owner || "").trim().slice(0, 100), notes: String(p.notes || "").trim().slice(0, 500), proxy_until: parseProxyUntil(p), active: 1, deleted: 0, sort_order: maxOrder + 1, created_at: nowText(), credentials: null });
-    if (p.dailyTask) await putRec("tasks", { id: uuid(), account_id: acc.id, name: String(p.dailyTask).slice(0, 100), recurrence: "daily", interval_days: null, monthly_day: null, next_due: null, notes: "", active: 1, deleted: 0, sort_order: 0, custom_tag_id: null, created_at: nowText() });
+    let planTasks = [];
+    let allTags = [];
     if (p.planId) {
       const plan = await getOne("care_plans", p.planId);
-      if (!plan) throw new Error("托管方案不存在，请刷新后重试");
-      const allTags = (await getAll("custom_task_tags")).filter((t) => !t.deleted);
-      for (const tn of JSON.parse(plan.tasks)) {
-        if (TASK_PRESETS[tn]) await insertPresetTask(acc.id, tn);
-        else if (VALID_DURATIONS[tn]) for (const tag of allTags.filter((t) => t.category === tn)) await putRec("tasks", { id: uuid(), account_id: acc.id, name: tag.name, recurrence: "once", interval_days: null, monthly_day: null, next_due: tag.start_date || gameToday(), notes: "", active: 1, deleted: 0, sort_order: ACTIVITY_TASK_SORT_ORDER, custom_tag_id: tag.id, created_at: nowText() });
+      if (!plan || plan.deleted) throw new Error("托管方案不存在，请刷新后重试");
+      let parsedTasks;
+      try { parsedTasks = JSON.parse(plan.tasks); } catch { throw new Error("托管方案数据损坏，请重新创建方案"); }
+      planTasks = JSON.parse(parsePlanTasks({ tasks: parsedTasks }));
+      allTags = (await getAll("custom_task_tags")).filter((t) => !t.deleted);
+    }
+    const acc = { id: uuid(), name: name.slice(0, 100), owner: String(p.owner || "").trim().slice(0, 100), notes: String(p.notes || "").trim().slice(0, 500), proxy_until: parseProxyUntil(p), active: 1, deleted: 0, sort_order: maxOrder + 1, created_at: nowText() };
+    const newTasks = [];
+    const dailyTask = String(p.dailyTask || "").trim();
+    if (dailyTask) newTasks.push({ id: uuid(), account_id: acc.id, name: dailyTask.slice(0, 100), recurrence: "daily", interval_days: null, monthly_day: null, next_due: null, notes: "", active: 1, deleted: 0, sort_order: 0, custom_tag_id: null, created_at: nowText() });
+    for (const taskName of planTasks) {
+      if (TASK_PRESETS[taskName]) newTasks.push(await buildPresetTask(acc.id, taskName));
+      else if (VALID_DURATIONS[taskName]) {
+        for (const tag of allTags.filter((item) => item.category === taskName)) {
+          newTasks.push({ id: uuid(), account_id: acc.id, name: tag.name, recurrence: "once", interval_days: null, monthly_day: null, next_due: tag.start_date || gameToday(), notes: "", active: 1, deleted: 0, sort_order: ACTIVITY_TASK_SORT_ORDER, custom_tag_id: tag.id, created_at: nowText() });
+        }
       }
     }
-    const clean = { ...acc }; delete clean.credentials; return clean;
+    await applyBatch({ puts: { accounts: [acc], tasks: newTasks } });
+    return { ...acc };
   }
   async function updateAccount(id, p) {
     const acc = await getOne("accounts", id); if (!acc || !acc.active || acc.deleted) throw new Error("没有找到该号主");
     const name = String(p.name || "").trim(); if (!name) throw new Error("请填写号主名称");
+    if (name.length > 100) throw new Error("号主名称不能超过 100 个字符");
+    ensureUniqueName(await getAll("accounts"), name, id);
     Object.assign(acc, { name: name.slice(0, 100), owner: String(p.owner || "").trim().slice(0, 100), notes: String(p.notes || "").trim().slice(0, 500), proxy_until: parseProxyUntil(p) });
     await putRec("accounts", acc);
   }
-  async function archiveAccount(id) { const a = await getOne("accounts", id); if (!a || !a.active) throw new Error("没有找到该号主"); a.active = 0; await putRec("accounts", a); }
-  async function reactivateAccount(id) { const a = await getOne("accounts", id); if (!a || a.active) throw new Error("没有找到该号主"); a.active = 1; await putRec("accounts", a); }
+  async function archiveAccount(id) { const a = await getOne("accounts", id); if (!a || !a.active || a.deleted) throw new Error("没有找到该号主"); a.active = 0; await putRec("accounts", a); }
+  async function reactivateAccount(id) { const a = await getOne("accounts", id); if (!a || a.active || a.deleted) throw new Error("没有找到该号主"); a.active = 1; await putRec("accounts", a); }
   async function purgeAccount(id) {
-    const a = await getOne("accounts", id); if (!a) throw new Error("没有找到该号主"); a.deleted = 1; a.active = 0; await putRec("accounts", a);
-    for (const t of await getAll("tasks")) if (t.account_id === id && !t.deleted) { t.deleted = 1; t.active = 0; await putRec("tasks", t); }
+    const a = await getOne("accounts", id); if (!a || a.deleted) throw new Error("没有找到该号主");
+    a.deleted = 1; a.active = 0;
+    const tasks = (await getAll("tasks")).filter((task) => task.account_id === id && !task.deleted);
+    for (const task of tasks) { task.deleted = 1; task.active = 0; }
+    await applyBatch({ puts: { accounts: [a], tasks } });
   }
   async function reorderAccounts(p) {
-    const ids = p.accountIds || []; let order = 0;
-    for (const id of ids) { const a = await getOne("accounts", id); if (a) { a.sort_order = order++; await putRec("accounts", a); } }
+    const ids = p.accountIds;
+    if (!Array.isArray(ids) || !ids.length) throw new Error("号主顺序不能为空");
+    if (ids.length !== new Set(ids).size) throw new Error("号主顺序中存在重复项");
+    const activeAccounts = liveAccounts(await getAll("accounts")).filter((account) => account.active);
+    const activeById = new Map(activeAccounts.map((account) => [account.id, account]));
+    if (ids.length !== activeAccounts.length || ids.some((id) => !activeById.has(id))) {
+      throw new Error("号主顺序与当前名单不一致，请刷新后重试");
+    }
+    const reordered = ids.map((id, sortOrder) => ({ ...activeById.get(id), sort_order: sortOrder }));
+    await applyBatch({ puts: { accounts: reordered } });
   }
 
   /* ---------- 号主任务标签 / 备注 ---------- */
   async function setAccountTaskTag(accountId, p) {
     const taskName = String(p.tag || "").trim(); if (!TASK_PRESETS[taskName]) throw new Error("任务标签无效");
+    const account = await getOne("accounts", accountId);
+    if (!account || !account.active || account.deleted) throw new Error("没有找到该号主");
     const enabled = !!p.enabled;
     const existing = activeTasks(await getAll("tasks")).filter((t) => t.account_id === accountId && t.name === taskName).sort((a, b) => String(b.id).localeCompare(String(a.id)))[0];
     const notes = "notes" in p ? normalizeNotes(p.notes) : null;
@@ -385,21 +542,27 @@
   async function listCustomTags() { return (await getAll("custom_task_tags")).filter((t) => !t.deleted).sort((a, b) => a.created_at.localeCompare(b.created_at)); }
   async function createCustomTag(p) {
     const name = String(p.name || "").trim(); if (!name) throw new Error("请填写活动名称");
+    if (name.length > 100) throw new Error("活动名称不能超过 100 个字符");
     if (RESERVED_ACTIVITY_NAMES.has(name)) throw new Error("活动名称不能与内置任务重名");
+    ensureUniqueName(await getAll("custom_task_tags"), name, null, true);
     const category = String(p.category || "").trim(); if (!VALID_DURATIONS[category]) throw new Error("活动类型无效");
-    const duration = Number(p.durationDays || 0); if (!(duration >= 1 && duration <= 365)) throw new Error("活动时长无效，应为 1 到 365 天");
+    const duration = Number(p.durationDays || 0); if (!Number.isInteger(duration) || duration < 1 || duration > 365) throw new Error("活动时长无效，应为 1 到 365 天");
     const raw = String(p.startDate || "").trim(); const start = raw || gameToday();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) throw new Error("开始日期格式无效");
+    try { parseDate(start); } catch { throw new Error("开始日期格式无效"); }
     return putRec("custom_task_tags", { id: uuid(), name: name.slice(0, 100), category, duration_days: duration, start_date: start, deleted: 0, created_at: nowText() });
   }
   async function deleteCustomTag(id) {
     const tag = await getOne("custom_task_tags", id); if (!tag) throw new Error("没有找到该任务标签");
-    tag.deleted = 1; await putRec("custom_task_tags", tag);
-    for (const t of await getAll("tasks")) if (t.custom_tag_id === id && t.active) { t.active = 0; await putRec("tasks", t); }
+    tag.deleted = 1;
+    const tasks = (await getAll("tasks")).filter((task) => task.custom_tag_id === id && task.active);
+    for (const task of tasks) task.active = 0;
+    await applyBatch({ puts: { custom_task_tags: [tag], tasks } });
   }
   async function setAccountCustomTag(accountId, p) {
     const tagId = p.tagId; if (!tagId) throw new Error("请选择有效的活动标签");
     const tag = await getOne("custom_task_tags", tagId); if (!tag || tag.deleted) throw new Error("自定义任务标签不存在");
+    const account = await getOne("accounts", accountId);
+    if (!account || !account.active || account.deleted) throw new Error("没有找到该号主");
     const enabled = !!p.enabled;
     const existing = activeTasks(await getAll("tasks")).find((t) => t.account_id === accountId && t.custom_tag_id === tagId);
     if (!enabled) { if (existing) { existing.active = 0; await putRec("tasks", existing); } return; }
@@ -409,20 +572,27 @@
   async function enableCustomTagForAll(tagId) {
     const tag = await getOne("custom_task_tags", tagId); if (!tag || tag.deleted) throw new Error("自定义任务标签不存在");
     const accounts = liveAccounts(await getAll("accounts")).filter((a) => a.active);
-    const tasks = activeTasks(await getAll("tasks")); let count = 0;
+    const tasks = activeTasks(await getAll("tasks"));
+    const newTasks = [];
     for (const acc of accounts) {
       if (tasks.some((t) => t.account_id === acc.id && t.custom_tag_id === tagId)) continue;
-      await putRec("tasks", { id: uuid(), account_id: acc.id, name: tag.name, recurrence: "once", interval_days: null, monthly_day: null, next_due: tag.start_date || gameToday(), notes: "", active: 1, deleted: 0, sort_order: ACTIVITY_TASK_SORT_ORDER, custom_tag_id: tagId, created_at: nowText() });
-      count++;
+      newTasks.push({ id: uuid(), account_id: acc.id, name: tag.name, recurrence: "once", interval_days: null, monthly_day: null, next_due: tag.start_date || gameToday(), notes: "", active: 1, deleted: 0, sort_order: ACTIVITY_TASK_SORT_ORDER, custom_tag_id: tagId, created_at: nowText() });
     }
-    return { enabled: count };
+    await applyBatch({ puts: { tasks: newTasks } });
+    return { enabled: newTasks.length };
   }
   async function cleanupExpiredActivities() {
     const now = new Date();
-    for (const tag of (await getAll("custom_task_tags")).filter((t) => !t.deleted && t.start_date)) {
-      const end = new Date(addDays(parseDate(tag.start_date), tag.duration_days).getTime()); end.setHours(3, 59, 0, 0);
-      if (end < now) { tag.deleted = 1; await putRec("custom_task_tags", tag); for (const t of await getAll("tasks")) if (t.custom_tag_id === tag.id && t.active) { t.active = 0; await putRec("tasks", t); } }
+    const expiredTags = [];
+    for (const tag of (await getAll("custom_task_tags")).filter((item) => !item.deleted && item.start_date)) {
+      const end = new Date(addDays(parseDate(tag.start_date), Number(tag.duration_days)).getTime()); end.setHours(3, 59, 0, 0);
+      if (end < now) { tag.deleted = 1; expiredTags.push(tag); }
     }
+    if (!expiredTags.length) return;
+    const expiredIds = new Set(expiredTags.map((tag) => tag.id));
+    const tasks = (await getAll("tasks")).filter((task) => expiredIds.has(task.custom_tag_id) && task.active);
+    for (const task of tasks) task.active = 0;
+    await applyBatch({ puts: { custom_task_tags: expiredTags, tasks } });
   }
 
   /* ---------- 托管方案 ---------- */
@@ -431,8 +601,8 @@
     const tasks = []; for (const v of raw) { const n = String(v).trim(); if (!TASK_PRESETS[n] && !VALID_DURATIONS[n]) throw new Error(`方案中包含无效任务：${n}`); if (!tasks.includes(n)) tasks.push(n); }
     return JSON.stringify(tasks);
   }
-  async function createCarePlan(p) { const name = String(p.name || "").trim(); if (!name) throw new Error("请填写方案名称"); const plan = await putRec("care_plans", { id: uuid(), name: name.slice(0, 20), tasks: parsePlanTasks(p), deleted: 0, created_at: nowText() }); return { ...plan, tasks: JSON.parse(plan.tasks) }; }
-  async function updateCarePlan(id, p) { const plan = await getOne("care_plans", id); if (!plan || plan.deleted) throw new Error("没有找到该托管方案"); plan.name = String(p.name || "").trim().slice(0, 20); plan.tasks = parsePlanTasks(p); await putRec("care_plans", plan); }
+  async function createCarePlan(p) { const name = String(p.name || "").trim(); if (!name) throw new Error("请填写方案名称"); if (name.length > 20) throw new Error("方案名称不能超过 20 个字符"); ensureUniqueName(await getAll("care_plans"), name, null, true); const plan = await putRec("care_plans", { id: uuid(), name, tasks: parsePlanTasks(p), deleted: 0, created_at: nowText() }); return { ...plan, tasks: JSON.parse(plan.tasks) }; }
+  async function updateCarePlan(id, p) { const plan = await getOne("care_plans", id); if (!plan || plan.deleted) throw new Error("没有找到该托管方案"); const name = String(p.name || "").trim(); if (!name) throw new Error("请填写方案名称"); if (name.length > 20) throw new Error("方案名称不能超过 20 个字符"); ensureUniqueName(await getAll("care_plans"), name, id, true); plan.name = name; plan.tasks = parsePlanTasks(p); await putRec("care_plans", plan); }
   async function deleteCarePlan(id) { const plan = await getOne("care_plans", id); if (!plan || plan.deleted) throw new Error("没有找到该托管方案"); plan.deleted = 1; await putRec("care_plans", plan); }
 
   /* ---------- 剧情任务 ---------- */
@@ -447,7 +617,12 @@
   }
   async function listStoryTasks() {
     const accById = new Map((await getAll("accounts")).map((a) => [a.id, a]));
-    return (await getAll("story_tasks")).filter((s) => s.active && !s.deleted).map((s) => ({ ...s, account_name: (s.owner_name || (accById.get(s.account_id) || {}).name || "临时号主") }))
+    return (await getAll("story_tasks")).filter((story) => {
+      if (!story.active || story.deleted) return false;
+      if (!story.account_id) return true;
+      const account = accById.get(story.account_id);
+      return Boolean(account && !account.deleted);
+    }).map((s) => ({ ...s, account_name: (s.owner_name || (accById.get(s.account_id) || {}).name || "临时号主") }))
       .sort((a, b) => (Number(!!a.completed_at) - Number(!!b.completed_at)) || String(a.created_at).localeCompare(String(b.created_at)));
   }
   async function createStoryTask(p) {
@@ -456,21 +631,27 @@
     const ownerName = String(p.ownerName || "").trim().slice(0, 100);
     let accountId = p.accountId || null; if (ownerName) accountId = null;
     if (!ownerName && !accountId) throw new Error("请选择号主或填写临时号主");
+    if (accountId) {
+      const account = await getOne("accounts", accountId);
+      if (!account || !account.active || account.deleted) throw new Error("请选择有效的号主");
+    }
     const hasBonus = !!p.hasBonus && taskType !== "world";
     const deadline = hasBonus ? await storyBonusDeadline(taskType) : null;
     return putRec("story_tasks", { id: uuid(), account_id: accountId, owner_name: ownerName, name, task_type: taskType, has_bonus: hasBonus ? 1 : 0, bonus_deadline: deadline, completed_at: null, active: 1, deleted: 0, created_at: nowText() });
   }
-  async function toggleStoryTask(id, completed) { const s = await getOne("story_tasks", id); if (!s || !s.active) throw new Error("没有找到该剧情任务"); s.completed_at = completed ? nowText() : null; await putRec("story_tasks", s); }
-  async function archiveStoryTask(id) { const s = await getOne("story_tasks", id); if (!s || !s.active) throw new Error("没有找到该剧情任务"); s.active = 0; await putRec("story_tasks", s); }
+  async function toggleStoryTask(id, completed) { const s = await getOne("story_tasks", id); if (!s || !s.active || s.deleted) throw new Error("没有找到该剧情任务"); s.completed_at = completed ? nowText() : null; await putRec("story_tasks", s); }
+  async function archiveStoryTask(id) { const s = await getOne("story_tasks", id); if (!s || !s.active || s.deleted) throw new Error("没有找到该剧情任务"); s.active = 0; await putRec("story_tasks", s); }
 
   /* ---------- 危战锚点 ---------- */
   async function updateVersionStart(p) {
-    const raw = String(p.versionStartDate || "").trim(); if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new Error("请选择有效的版本开始日期");
+    const raw = String(p.versionStartDate || "").trim();
+    try { parseDate(raw); } catch { throw new Error("请选择有效的版本开始日期"); }
     if (pyWeekday(parseDate(raw)) !== 2) throw new Error("版本开始日期应为星期三");
-    await metaSet("version_anchor_date", raw);
-    const settings = await getScheduleSettings();
-    for (const t of await getAll("tasks")) if (t.recurrence === "version" && t.active && !t.deleted) { t.next_due = settings.warWindow.eventStart; await putRec("tasks", t); }
-    return settings;
+    const warWindow = versionWindow(raw);
+    const tasks = (await getAll("tasks")).filter((task) => task.recurrence === "version" && task.active && !task.deleted);
+    for (const task of tasks) task.next_due = warWindow.eventStart;
+    await applyBatch({ puts: { app_meta: [{ key: "version_anchor_date", value: raw }], tasks } });
+    return { versionAnchorDate: raw, versionStartDate: warWindow.versionStart, warWindow };
   }
 
   /* ---------- 备份 导出 / 导入 ---------- */
@@ -536,6 +717,67 @@
     return requireMappedId(ids, oldId, label);
   }
 
+  function normalizeImportedPlanTasks(value) {
+    let tasks = value;
+    if (typeof tasks === "string") {
+      try { tasks = JSON.parse(tasks); } catch { throw new Error("备份中的托管方案数据无效"); }
+    }
+    try { return parsePlanTasks({ tasks }); } catch { throw new Error("备份中的托管方案数据无效"); }
+  }
+
+  function importedRecurrence(value) {
+    const recurrence = String(value || "daily");
+    if (recurrence === "manual") return "once";
+    if (!TASK_RECURRENCES.has(recurrence)) throw new Error("备份中的任务类型无效");
+    return recurrence;
+  }
+
+  function validateBackupSource(source) {
+    for (const account of source.accounts) {
+      if (!String(account.name || "").trim()) throw new Error("备份中的号主名称不能为空");
+      if (account.proxy_until) {
+        try { parseDate(account.proxy_until); } catch { throw new Error("备份中的号主截止日期无效"); }
+      }
+    }
+    for (const tag of source.custom_task_tags) {
+      if (tag.deleted) continue;
+      if (!String(tag.name || "").trim()) throw new Error("备份中的活动名称不能为空");
+      if (!VALID_DURATIONS[tag.category || "大活动"]) throw new Error("备份中的活动类型无效");
+      const duration = Number(tag.duration_days ?? 16);
+      if (!Number.isInteger(duration) || duration < 1 || duration > 365) throw new Error("备份中的活动时长无效");
+      if (tag.start_date) {
+        try { parseDate(tag.start_date); } catch { throw new Error("备份中的活动开始日期无效"); }
+      }
+    }
+    for (const task of source.tasks) {
+      if (!String(task.name || "").trim()) throw new Error("备份中的任务名称不能为空");
+      const recurrence = importedRecurrence(task.recurrence);
+      if (task.next_due) {
+        const due = String(task.next_due);
+        if (due.includes("T")) {
+          if (Number.isNaN(new Date(due).getTime())) throw new Error("备份中的任务到期时间无效");
+        } else {
+          try { parseDate(due); } catch { throw new Error("备份中的任务到期日期无效"); }
+        }
+      }
+      if (recurrence === "monthly") {
+        const monthlyDay = Number(task.monthly_day);
+        if (!Number.isInteger(monthlyDay) || monthlyDay < 1 || monthlyDay > 28) throw new Error("备份中的每月任务配置无效");
+      }
+      if (recurrence === "interval" && task.name !== "探索派遣") {
+        const intervalDays = Number(task.interval_days);
+        if (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365) throw new Error("备份中的周期任务配置无效");
+      }
+    }
+    for (const record of source.task_records) {
+      try { parseDate(record.task_date); } catch { throw new Error("备份中的完成记录日期无效"); }
+    }
+    for (const story of source.story_tasks) {
+      if (!STORY_TASK_TYPES[story.task_type || "world"]) throw new Error("备份中的剧情任务类型无效");
+      if (!String(story.name || "").trim()) throw new Error("备份中的剧情任务名称不能为空");
+    }
+  }
+
   function prepareBackupImport(payload) {
     const data = normalizeBackupPayload(payload);
     if (!Array.isArray(data.accounts)) {
@@ -550,6 +792,7 @@
       care_plans: getImportRows(data, "carePlans"),
       story_tasks: getImportRows(data, "storyTasks"),
     };
+    validateBackupSource(source);
     const accountIds = createImportIdMap(source.accounts, "号主");
     const taskIds = createImportIdMap(source.tasks, "任务");
     const recordIds = createImportIdMap(source.task_records, "完成记录");
@@ -565,8 +808,8 @@
         owner: account.owner || "",
         notes: account.notes || "",
         proxy_until: account.proxy_until ?? null,
-        active: account.active ?? 1,
-        deleted: account.deleted ?? 0,
+        active: account.deleted ? 0 : (account.active ?? 1),
+        deleted: account.deleted ? 1 : 0,
         sort_order: account.sort_order ?? 0,
         created_at: account.created_at || importedAt,
         updated_at: importedAt,
@@ -577,7 +820,7 @@
         category: tag.category || "大活动",
         duration_days: tag.duration_days ?? 16,
         start_date: tag.start_date ?? null,
-        deleted: tag.deleted ?? 0,
+        deleted: tag.deleted ? 1 : 0,
         created_at: tag.created_at || importedAt,
         updated_at: importedAt,
       })),
@@ -585,13 +828,13 @@
         id: taskIds.get(String(task.id)),
         account_id: requireMappedId(accountIds, task.account_id, "任务号主"),
         name: task.name || "",
-        recurrence: task.recurrence || "daily",
+        recurrence: importedRecurrence(task.recurrence),
         interval_days: task.interval_days ?? null,
         monthly_day: task.monthly_day ?? null,
-        next_due: task.next_due ?? null,
+        next_due: task.recurrence === "manual" ? (task.next_due || gameToday()) : (task.next_due ?? null),
         notes: task.notes || "",
-        active: task.active ?? 1,
-        deleted: task.deleted ?? 0,
+        active: task.deleted ? 0 : (task.active ?? 1),
+        deleted: task.deleted ? 1 : 0,
         sort_order: task.sort_order ?? 0,
         custom_tag_id: optionalMappedId(tagIds, task.custom_tag_id, "任务活动标签"),
         created_at: task.created_at || importedAt,
@@ -617,16 +860,16 @@
         has_bonus: story.has_bonus ?? 0,
         bonus_deadline: story.bonus_deadline ?? null,
         completed_at: story.completed_at ?? null,
-        active: story.active ?? 1,
-        deleted: 0,
+        active: story.deleted ? 0 : (story.active ?? 1),
+        deleted: story.deleted ? 1 : 0,
         created_at: story.created_at || importedAt,
         updated_at: importedAt,
       })),
       care_plans: source.care_plans.map((plan) => ({
         id: planIds.get(String(plan.id)),
         name: plan.name,
-        tasks: plan.tasks || "[]",
-        deleted: 0,
+        tasks: normalizeImportedPlanTasks(plan.tasks),
+        deleted: plan.deleted ? 1 : 0,
         created_at: plan.created_at || importedAt,
         updated_at: importedAt,
       })),
@@ -665,7 +908,7 @@
   let snapshotSequence = 0;
   async function saveImportSnapshot() {
     const backup = await buildBackup();
-    if (!backup.data.accounts.length && !backup.data.records.length) return;
+    if (!Object.values(backup.data).some((rows) => Array.isArray(rows) && rows.length)) return;
     const createdAt = new Date().toISOString();
     await putRec("backup_snapshots", {
       id: uuid(),
@@ -689,6 +932,8 @@
           createdAt: snapshot.created_at,
           accountCount: Array.isArray(data.accounts) ? data.accounts.length : 0,
           recordCount: Array.isArray(data.records) ? data.records.length : 0,
+          taskCount: Array.isArray(data.tasks) ? data.tasks.length : 0,
+          storyTaskCount: Array.isArray(data.storyTasks) ? data.storyTasks.length : 0,
         };
       });
   }
@@ -698,7 +943,11 @@
     if (!snapshot) throw new Error("没有找到该导入快照");
     await importBackup(snapshot.backup);
   }
-  async function resetDatabase() { for (const store of STORES) await reqP(tx(store, "readwrite").clear()); }
+  async function resetDatabase() {
+    await runAtomic(STORES, (transaction) => {
+      for (const store of STORES) transaction.objectStore(store).clear();
+    });
+  }
 
   /* ---------- 凭据 ---------- */
   function rejectPwaCredentials() {

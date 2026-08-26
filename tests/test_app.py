@@ -173,6 +173,23 @@ class TaskRecorderTest(unittest.TestCase):
             )
         self.assertEqual(counts, (0, 0, 0, 0, 0))
 
+    def test_pre_import_snapshot_covers_standalone_story_data(self):
+        app.reset_database()
+        app.create_story_task(
+            {
+                "ownerName": "临时号主",
+                "name": "仅有的剧情任务",
+                "taskType": "world",
+            }
+        )
+
+        app._write_pre_import_snapshot()
+
+        snapshots = list(app.DB_PATH.parent.glob("pre-import-*.json"))
+        self.assertEqual(len(snapshots), 1)
+        saved = json.loads(snapshots[0].read_text(encoding="utf-8"))
+        self.assertEqual(saved["data"]["storyTasks"][0]["name"], "仅有的剧情任务")
+
     def test_existing_database_schema_adds_weekly_without_losing_data(self):
         app.DB_PATH = Path(self.temp_dir.name) / "legacy.db"
         with sqlite3.connect(app.DB_PATH) as connection:
@@ -363,24 +380,78 @@ class TaskRecorderTest(unittest.TestCase):
 
     def test_transformer_future_time_is_cooling_not_due(self):
         account = create_test_account({"name": "冷却测试号"})
+        current_game_day = app.game_today().isoformat()
         task = app.create_task(
             {
                 "accountId": account["id"],
                 "name": "质变仪",
                 "recurrence": "interval",
                 "intervalDays": 7,
-                "nextDue": date.today().isoformat(),
+                "nextDue": current_game_day,
             }
         )
         available_at = (datetime.now().replace(second=0, microsecond=0) + timedelta(hours=168)).isoformat(timespec="minutes")
         with app.db_connection() as connection:
             connection.execute("UPDATE tasks SET next_due = ? WHERE id = ?", (available_at, task["id"]))
 
-        state = app.load_state(date.today().isoformat())
+        state = app.load_state(current_game_day)
         cooling = next(item for item in state["dueTasks"] if item["id"] == task["id"])
         self.assertEqual(cooling["available_at"], available_at)
         self.assertGreater(cooling["cooldown_remaining_seconds"], 0)
         self.assertFalse(cooling["completed"])
+
+    def test_precise_cooldown_uses_four_am_game_day_boundary(self):
+        account = create_test_account({"name": "游戏日边界号"})
+        app.set_account_task_tag(account["id"], {"tag": "质变仪", "enabled": True})
+        app.set_account_task_tag(account["id"], {"tag": "探索派遣", "enabled": True})
+        with app.db_connection() as connection:
+            transformer_id = connection.execute(
+                "SELECT id FROM tasks WHERE account_id = ? AND name = '质变仪'",
+                (account["id"],),
+            ).fetchone()[0]
+            expedition_id = connection.execute(
+                "SELECT id FROM tasks WHERE account_id = ? AND name = '探索派遣'",
+                (account["id"],),
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE tasks SET next_due = '2026-06-21T02:00' WHERE id = ?",
+                (transformer_id,),
+            )
+            connection.execute(
+                "UPDATE tasks SET next_due = '2026-06-21T04:00' WHERE id = ?",
+                (expedition_id,),
+            )
+
+        june_twentieth = {task["id"] for task in app.load_state("2026-06-20")["dueTasks"]}
+        self.assertIn(transformer_id, june_twentieth)
+        self.assertNotIn(expedition_id, june_twentieth)
+        june_twenty_first = {task["id"] for task in app.load_state("2026-06-21")["dueTasks"]}
+        self.assertIn(expedition_id, june_twenty_first)
+
+    def test_multiple_record_notes_do_not_duplicate_task_rows(self):
+        account = create_test_account({"name": "记录去重号"})
+        app.set_account_task_tag(account["id"], {"tag": "爱可菲料理", "enabled": True})
+        selected_date = "2026-06-18"
+        task = next(
+            item for item in app.load_state(selected_date)["tasks"]
+            if item["account_id"] == account["id"] and item["name"] == "爱可菲料理"
+        )
+        cycle_key = app.weekly_cycle_key(date.fromisoformat(selected_date))
+        with app.db_connection() as connection:
+            connection.execute(
+                "INSERT INTO task_records(task_id, task_date, completed_at, note) VALUES(?, ?, ?, '')",
+                (task["id"], selected_date, "2026-06-18T10:00:00"),
+            )
+            connection.execute(
+                "INSERT INTO task_records(task_id, task_date, completed_at, note) VALUES(?, ?, ?, ?)",
+                (task["id"], selected_date, "2026-06-18T10:01:00", cycle_key),
+            )
+
+        state = app.load_state(selected_date)
+        self.assertEqual(sum(item["id"] == task["id"] for item in state["tasks"]), 1)
+        matching_due = [item for item in state["dueTasks"] if item["id"] == task["id"]]
+        self.assertEqual(len(matching_due), 1)
+        self.assertTrue(matching_due[0]["completed"])
 
     def test_history_returns_completed_record(self):
         account = create_test_account({"name": "历史测试号", "dailyTask": "每日"})
@@ -633,6 +704,18 @@ class TaskRecorderTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             app.reorder_accounts({"accountIds": [reversed_ids[0], reversed_ids[0]]})
 
+    def test_permanently_deleted_account_cannot_be_reactivated(self):
+        account = create_test_account({"name": "永久删除测试号"})
+        app.archive_account(account["id"])
+        app.purge_account(account["id"])
+
+        with self.assertRaisesRegex(LookupError, "没有找到该号主"):
+            app.reactivate_account(account["id"])
+        self.assertNotIn(
+            account["id"],
+            {item["id"] for item in app.load_state("2026-06-20")["accounts"]},
+        )
+
     def test_care_plan_applies_tasks_on_account_creation_then_decouples(self):
         plan = app.create_care_plan({"name": "普托", "tasks": ["体力", "狗粮", "壶"]})
         self.assertEqual(plan["tasks"], ["体力", "狗粮", "壶"])
@@ -743,6 +826,92 @@ class TaskRecorderTest(unittest.TestCase):
         tag_id = after["customTags"][0]["id"]
         self.assertEqual(activity["custom_tag_id"], tag_id)
         self.assertEqual(len(after["records"]), 1)
+
+    def test_import_does_not_restore_pwa_soft_deleted_tags_or_plans(self):
+        app.import_backup(
+            {
+                "accounts": [],
+                "tasks": [],
+                "records": [],
+                "storyTasks": [],
+                "groupNotes": [],
+                "customTags": [
+                    {
+                        "id": "deleted-tag",
+                        "name": "已删除活动",
+                        "category": "大活动",
+                        "duration_days": 16,
+                        "start_date": "2026-06-01",
+                        "deleted": 1,
+                    }
+                ],
+                "carePlans": [
+                    {
+                        "id": "deleted-plan",
+                        "name": "已删除方案",
+                        "tasks": '["体力"]',
+                        "deleted": 1,
+                    }
+                ],
+            }
+        )
+
+        data = app.build_backup_payload()["data"]
+        self.assertEqual(data["customTags"], [])
+        self.assertEqual(data["carePlans"], [])
+
+    def test_import_rejects_invalid_references_before_replacing_data(self):
+        existing = create_test_account({"name": "引用校验保留号"})
+        with self.assertRaisesRegex(ValueError, "任务号主引用不存在"):
+            app.import_backup(
+                {
+                    "accounts": [],
+                    "tasks": [
+                        {
+                            "id": "orphan-task",
+                            "account_id": "missing-account",
+                            "name": "体力",
+                            "recurrence": "daily",
+                        }
+                    ],
+                    "records": [],
+                    "storyTasks": [],
+                    "customTags": [],
+                    "carePlans": [],
+                    "groupNotes": [],
+                }
+            )
+        self.assertIn(
+            existing["id"],
+            {item["id"] for item in app.load_state("2026-06-20")["accounts"]},
+        )
+
+    def test_import_migrates_legacy_manual_tasks_to_visible_once_tasks(self):
+        app.import_backup(
+            {
+                "accounts": [{"id": "legacy-account", "name": "旧备份号"}],
+                "tasks": [
+                    {
+                        "id": "legacy-manual-task",
+                        "account_id": "legacy-account",
+                        "name": "旧专项任务",
+                        "recurrence": "manual",
+                        "active": 1,
+                    }
+                ],
+                "records": [],
+                "storyTasks": [],
+                "customTags": [],
+                "carePlans": [],
+                "groupNotes": [],
+            }
+        )
+
+        task = next(
+            item for item in app.load_state(app.game_today().isoformat())["dueTasks"]
+            if item["name"] == "旧专项任务"
+        )
+        self.assertEqual(task["recurrence"], "once")
 
     def test_food_task_exposes_previous_day_completion_time(self):
         account = create_test_account({"name": "狗粮时间测试号"})

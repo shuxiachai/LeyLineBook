@@ -15,6 +15,8 @@ const state = {
   selectedActivityType: null,
   selectedStoryType: "archon",
 };
+let stateRequestSequence = 0;
+let historyRequestSequence = 0;
 const isPwaMode = Boolean(window.LOCAL_BACKEND);
 
 const recurrenceLabels = {
@@ -400,7 +402,9 @@ async function initializeCharacterBackground() {
 }
 
 function gameDate() {
-  return new Date(Date.now() - 4 * 60 * 60 * 1000);
+  const value = new Date();
+  value.setHours(value.getHours() - 4);
+  return value;
 }
 
 function localDateString(value) {
@@ -408,6 +412,15 @@ function localDateString(value) {
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function calendarDayNumber(value) {
+  return Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()) / 86400000;
+}
+
+function gameDayEnd(dateText) {
+  const [year, month, day] = dateText.split("-").map(Number);
+  return new Date(year, month - 1, day + 1, 4, 0, 0);
 }
 
 function localDateTimeInputValue(value) {
@@ -505,7 +518,17 @@ function confirmAction({ title = "请确认", message, confirmText = "确认" })
 }
 
 async function loadState() {
-  state.data = await api(`/api/state?date=${encodeURIComponent(state.selectedDate)}`);
+  const requestedDate = state.selectedDate;
+  const requestId = ++stateRequestSequence;
+  let data;
+  try {
+    data = await api(`/api/state?date=${encodeURIComponent(requestedDate)}`);
+  } catch (error) {
+    if (requestId !== stateRequestSequence) return;
+    throw error;
+  }
+  if (requestId !== stateRequestSequence || requestedDate !== state.selectedDate) return;
+  state.data = data;
   renderToday();
   renderAccounts();
   renderActivities();
@@ -527,7 +550,8 @@ function renderHistoryAccountFilter() {
 function makeProxyBadge(proxyUntil) {
   if (!proxyUntil) return "";
   const today = localDateString(gameDate());
-  const daysLeft = Math.ceil((new Date(proxyUntil + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000);
+  const daysLeft = calendarDayNumber(new Date(proxyUntil + "T00:00:00"))
+    - calendarDayNumber(new Date(today + "T00:00:00"));
   const cls = daysLeft < 0 ? "proxy-expired" : daysLeft <= 3 ? "proxy-urgent" : daysLeft <= 7 ? "proxy-warning" : "proxy-normal";
   const label = daysLeft < 0 ? `${formatActivityDate(proxyUntil)} 已到期` : `${formatActivityDate(proxyUntil)} 到期`;
   return `<span class="proxy-badge ${cls}">${label}</span>`;
@@ -544,9 +568,8 @@ function groupTasks(tasks) {
 function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   const groups = groupTasks(tasks);
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
-  const _todayParts = localDateString(gameDate()).split("-").map(Number);
-  const _endOfGameToday = new Date(_todayParts[0], _todayParts[1] - 1, _todayParts[2] + 1, 4, 0, 0);
-  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= _endOfGameToday;
+  const selectedGameDayEnd = gameDayEnd(state.selectedDate);
+  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= selectedGameDayEnd;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
     const countable = group.tasks.filter((task) => !isLongCooling(task)).length;
@@ -721,7 +744,7 @@ function renderActivities() {
       const dateRange = tag.start_date
         ? `${formatActivityDate(tag.start_date)} 10:00 — ${formatActivityDate(calcActivityEndDate(tag.start_date, tag.duration_days))} 03:59`
         : "";
-      return `<div class="activity-item"><div class="activity-item-info"><span class="activity-name">${escapeHtml(tag.name)}</span>${dateRange ? `<span class="activity-date-range">${dateRange}</span>` : ""}</div><span class="activity-badge">${tag.duration_days} 天</span><button class="button ghost activity-enable-all" data-enable-all-tag="${tag.id}">全部启用</button><button class="icon-button" data-remove-custom-tag="${tag.id}" aria-label="删除">✕</button></div>`;
+      return `<div class="activity-item"><div class="activity-item-info"><span class="activity-name">${escapeHtml(tag.name)}</span>${dateRange ? `<span class="activity-date-range">${dateRange}</span>` : ""}</div><span class="activity-badge">${escapeHtml(tag.duration_days)} 天</span><button class="button ghost activity-enable-all" data-enable-all-tag="${tag.id}">全部启用</button><button class="icon-button" data-remove-custom-tag="${tag.id}" aria-label="删除">✕</button></div>`;
     }).join("");
     html += `</div>`;
   }
@@ -1706,7 +1729,7 @@ function switchView(view) {
   document.querySelector("#eyebrow").textContent = titles[view][0];
   document.querySelector("#pageTitle").textContent = titles[view][1];
   document.querySelector("#todayControls").classList.toggle("hidden", view !== "today");
-  if (view === "history") loadHistory();
+  if (view === "history") loadHistory().catch((error) => showToast(error.message));
   if (view === "guide") initGuideSpy();
   if (view === "settings" && isPwaMode) loadImportSnapshots().catch((error) => showToast(error.message));
 }
@@ -1726,7 +1749,16 @@ async function loadHistory() {
   let url = `/api/history?end=${encodeURIComponent(end)}`;
   if (start) url += `&start=${encodeURIComponent(start)}`;
   if (accountId) url += `&accountId=${encodeURIComponent(accountId)}`;
-  historyRowsCache = await api(url);
+  const requestId = ++historyRequestSequence;
+  let rows;
+  try {
+    rows = await api(url);
+  } catch (error) {
+    if (requestId !== historyRequestSequence) return;
+    throw error;
+  }
+  if (requestId !== historyRequestSequence) return;
+  historyRowsCache = rows;
   const taskSelect = document.querySelector("#historyTask");
   const current = taskSelect.value;
   const names = [...new Set(historyRowsCache.map((row) => row.task_name))].sort((a, b) => a.localeCompare(b, "zh"));
@@ -1771,7 +1803,9 @@ async function loadImportSnapshots() {
   list.innerHTML = snapshots.length
     ? snapshots.map((snapshot) => {
       const createdAt = String(snapshot.createdAt || "").replace("T", " ").replace(/\.\d{3}Z$/, "");
-      return `<div class="snapshot-item"><div><strong>${escapeHtml(createdAt || "导入前快照")}</strong><small>${snapshot.accountCount} 个号主 · ${snapshot.recordCount} 条完成记录</small></div><button type="button" class="button ghost" data-restore-snapshot="${escapeHtml(snapshot.id)}">恢复</button></div>`;
+      const counts = [`${snapshot.accountCount} 个号主`, `${snapshot.taskCount || 0} 个任务`, `${snapshot.recordCount} 条完成记录`];
+      if (snapshot.storyTaskCount) counts.push(`${snapshot.storyTaskCount} 个剧情任务`);
+      return `<div class="snapshot-item"><div><strong>${escapeHtml(createdAt || "导入前快照")}</strong><small>${counts.map(escapeHtml).join(" · ")}</small></div><button type="button" class="button ghost" data-restore-snapshot="${escapeHtml(snapshot.id)}">恢复</button></div>`;
     }).join("")
     : '<div class="empty-state">还没有导入前快照。</div>';
 }
@@ -1936,7 +1970,8 @@ function updateProxyDaysLeft() {
   // 留空即代表永久：不设截止日期，也不做到期提醒
   if (!val) { el.textContent = "永久（不提醒到期）"; return; }
   const today = localDateString(gameDate());
-  const days = Math.ceil((new Date(val + "T00:00:00") - new Date(today + "T00:00:00")) / 86400000);
+  const days = calendarDayNumber(new Date(val + "T00:00:00"))
+    - calendarDayNumber(new Date(today + "T00:00:00"));
   if (days === 0) el.textContent = "今天到期";
   else if (days > 0) el.textContent = `距今 ${days} 天`;
   else el.textContent = `已过期 ${-days} 天`;

@@ -1,5 +1,5 @@
 /* LeyLineBook PWA Service Worker — 网络优先，离线回退缓存 */
-const CACHE = "leylinebook-shell-v3";
+const CACHE = "leylinebook-shell-v4";
 const SHELL = [
   ".",
   "index.html",

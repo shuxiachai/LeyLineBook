@@ -74,6 +74,18 @@
         "eventEndTime": "03:59",
         "nextVersionStart": "2026-08-12"
       }
+    },
+    {
+      "reference": "2026-11-04",
+      "expected": {
+        "anchorDate": "2026-05-20",
+        "versionStart": "2026-11-04",
+        "eventStart": "2026-11-11",
+        "eventStartTime": "10:00",
+        "eventEnd": "2026-12-15",
+        "eventEndTime": "03:59",
+        "nextVersionStart": "2026-12-16"
+      }
     }
   ],
   "stateFixture": {

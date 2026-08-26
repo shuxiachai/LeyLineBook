@@ -64,7 +64,7 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "3.0.3"
+APP_VERSION = "3.0.4"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 BACKUP_FORMAT = "leylinebook-backup"
 BACKUP_SCHEMA_VERSION = 2
@@ -84,6 +84,11 @@ def now_text() -> str:
 
 def game_today() -> date:
     return (datetime.now() - timedelta(hours=4)).date()
+
+
+def game_day_end(reference: date) -> datetime:
+    next_day = reference + timedelta(days=1)
+    return datetime(next_day.year, next_day.month, next_day.day, 4, 0)
 
 
 def today_text() -> str:
@@ -968,14 +973,17 @@ def load_state(selected_date: str) -> dict:
             for row in connection.execute(
                 """
                 SELECT t.*, a.name AS account_name, a.proxy_until AS account_proxy_until,
-                       CASE WHEN r.id IS NULL THEN 0 ELSE 1 END AS completed,
+                       CASE WHEN EXISTS(
+                           SELECT 1 FROM task_records current
+                           WHERE current.task_id = t.id
+                             AND current.task_date = ?
+                             AND current.note = ''
+                       ) THEN 1 ELSE 0 END AS completed,
                        CASE WHEN EXISTS(
                            SELECT 1 FROM task_records prior WHERE prior.task_id = t.id
                        ) THEN 1 ELSE 0 END AS completed_ever
                 FROM tasks t
                 JOIN accounts a ON a.id = t.account_id
-                LEFT JOIN task_records r
-                  ON r.task_id = t.id AND r.task_date = ?
                 WHERE t.active = 1 AND a.active = 1 AND a.deleted = 0
                 ORDER BY a.sort_order, a.id, t.sort_order,
                          CASE WHEN t.custom_tag_id IS NULL THEN 0 ELSE t.custom_tag_id END,
@@ -1006,11 +1014,9 @@ def load_state(selected_date: str) -> dict:
         settings["versionAnchorDate"], date.fromisoformat(selected_date)
     )
     selected_day = date.fromisoformat(selected_date)
-    selected_cutoff = (
-        datetime.now()
-        if selected_day == game_today()
-        else datetime.combine(selected_day, datetime.max.time())
-    )
+    now = datetime.now()
+    is_current_game_day = selected_day == game_today()
+    selected_game_day_end = game_day_end(selected_day)
     selected_week_key = weekly_cycle_key(selected_day)
     with db_connection() as connection:
         completed_version_task_ids = {
@@ -1023,12 +1029,13 @@ def load_state(selected_date: str) -> dict:
                 (war_window["eventStart"], war_window["eventEnd"]),
             )
         }
-        completed_weekly_task_dates = {
-            row[0]: row[1]
-            for row in connection.execute(
-                "SELECT task_id, task_date FROM task_records WHERE note = ?",
-                (selected_week_key,),
-            )
+        weekly_records = connection.execute(
+            "SELECT task_id, task_date FROM task_records WHERE note = ?",
+            (selected_week_key,),
+        ).fetchall()
+        completed_weekly_task_ids = {row[0] for row in weekly_records}
+        completed_weekly_on_selected_ids = {
+            row[0] for row in weekly_records if row[1] == selected_date
         }
         prev_day_food_times = {
             row[0]: row[1]
@@ -1064,8 +1071,8 @@ def load_state(selected_date: str) -> dict:
                 task["prev_day_completed_at"] = prev_day_food_times[task["id"]]
             due_tasks.append(task)
         elif recurrence == "weekly":
-            week_done = task["id"] in completed_weekly_task_dates
-            completed_on_selected = completed_weekly_task_dates.get(task["id"]) == selected_date
+            week_done = task["id"] in completed_weekly_task_ids
+            completed_on_selected = task["id"] in completed_weekly_on_selected_ids
             task["completed"] = completed_on_selected
             next_refresh = weekly_cycle_start(selected_day) + timedelta(days=7)
             task["event_end"] = next_refresh.isoformat()
@@ -1082,12 +1089,16 @@ def load_state(selected_date: str) -> dict:
             ):
                 _pot_day = date.fromisoformat(task["next_due"])
                 _pot_due = datetime(_pot_day.year, _pot_day.month, _pot_day.day, 4, 0)
-                if _pot_due > datetime.now():
+                if _pot_due > now:
                     precise_due = _pot_due
             is_due = bool(
                 task["next_due"]
                 and (
-                    precise_due <= selected_cutoff
+                    (
+                        precise_due <= now
+                        if is_current_game_day
+                        else precise_due < selected_game_day_end
+                    )
                     if precise_due
                     else task["next_due"] <= selected_date
                 )
@@ -1095,9 +1106,11 @@ def load_state(selected_date: str) -> dict:
             if precise_due:
                 task["available_at"] = precise_due.isoformat(timespec="minutes")
                 task["cooldown_remaining_seconds"] = max(
-                    0, int((precise_due - datetime.now()).total_seconds())
+                    0, int((precise_due - now).total_seconds())
                 )
-            still_cooling = precise_due is not None and precise_due > datetime.now()
+            still_cooling = (
+                is_current_game_day and precise_due is not None and precise_due > now
+            )
             if task["completed"] or is_due or still_cooling:
                 due_tasks.append(task)
         elif recurrence == "monthly" and (
@@ -1124,10 +1137,12 @@ def load_state(selected_date: str) -> dict:
         ):
             due_tasks.append(task)
 
-    _next_day = game_today() + timedelta(days=1)
-    end_of_game_today = datetime(_next_day.year, _next_day.month, _next_day.day, 4, 0)
     def _long_cooling(task):
-        return not task["completed"] and task.get("available_at") and datetime.fromisoformat(task["available_at"]) >= end_of_game_today
+        return (
+            not task["completed"]
+            and task.get("available_at")
+            and datetime.fromisoformat(task["available_at"]) >= selected_game_day_end
+        )
     countable_tasks = [task for task in due_tasks if not _long_cooling(task)]
     completed_count = sum(1 for task in countable_tasks if task["completed"])
     daily_tasks = [task for task in countable_tasks if task["name"] in DAILY_CATEGORY_TASKS]
@@ -1308,7 +1323,10 @@ def update_account(account_id: int, payload: dict) -> None:
     proxy_until = _parse_proxy_until(payload)
     with db_connection() as connection:
         cursor = connection.execute(
-            "UPDATE accounts SET name = ?, owner = ?, notes = ?, proxy_until = ? WHERE id = ? AND active = 1",
+            """
+            UPDATE accounts SET name = ?, owner = ?, notes = ?, proxy_until = ?
+            WHERE id = ? AND active = 1 AND deleted = 0
+            """,
             (name, owner, notes, proxy_until, account_id),
         )
         if cursor.rowcount == 0:
@@ -1358,7 +1376,11 @@ def set_account_credentials(account_id: int, payload: dict) -> None:
 def archive_account(account_id: int) -> None:
     with db_connection() as connection:
         cursor = connection.execute(
-            "UPDATE accounts SET active = 0 WHERE id = ? AND active = 1", (account_id,)
+            """
+            UPDATE accounts SET active = 0
+            WHERE id = ? AND active = 1 AND deleted = 0
+            """,
+            (account_id,),
         )
         if cursor.rowcount == 0:
             raise LookupError("没有找到该号主")
@@ -1376,7 +1398,11 @@ def purge_account(account_id: int) -> None:
 def reactivate_account(account_id: int) -> None:
     with db_connection() as connection:
         cursor = connection.execute(
-            "UPDATE accounts SET active = 1 WHERE id = ? AND active = 0", (account_id,)
+            """
+            UPDATE accounts SET active = 1
+            WHERE id = ? AND active = 0 AND deleted = 0
+            """,
+            (account_id,),
         )
         if cursor.rowcount == 0:
             raise LookupError("没有找到该号主")
@@ -1421,6 +1447,14 @@ def build_backup_payload() -> dict:
         }
 
 
+def _normalize_imported_care_plan_tasks(value) -> str:
+    try:
+        tasks = json.loads(value) if isinstance(value, str) else value
+        return _parse_care_plan_tasks({"tasks": tasks})
+    except (TypeError, ValueError) as error:
+        raise ValueError("备份中的托管方案数据无效") from error
+
+
 def _normalize_backup_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
@@ -1442,12 +1476,44 @@ def _normalize_backup_payload(payload: dict) -> dict:
             raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
     if not isinstance(data.get("accounts"), list):
         raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
+
+    id_sets: dict[str, set[str]] = {}
+    for collection, label in (("accounts", "号主"), ("tasks", "任务"), ("customTags", "活动标签")):
+        ids: set[str] = set()
+        for row in data.get(collection, []):
+            if row.get("id") is None:
+                raise ValueError(f"备份中的{label}缺少 ID")
+            row_id = str(row["id"])
+            if row_id in ids:
+                raise ValueError(f"备份中的{label} ID 重复")
+            ids.add(row_id)
+        id_sets[collection] = ids
+
+    for row in data.get("tasks", []):
+        if str(row.get("account_id")) not in id_sets["accounts"]:
+            raise ValueError("备份中的任务号主引用不存在")
+        tag_id = row.get("custom_tag_id")
+        if tag_id is not None and str(tag_id) not in id_sets["customTags"]:
+            raise ValueError("备份中的任务活动标签引用不存在")
+    for row in data.get("records", []):
+        if str(row.get("task_id")) not in id_sets["tasks"]:
+            raise ValueError("备份中的完成记录任务引用不存在")
+    for row in data.get("storyTasks", []):
+        account_id = row.get("account_id")
+        if account_id is not None and str(account_id) not in id_sets["accounts"]:
+            raise ValueError("备份中的剧情任务号主引用不存在")
+    for row in data.get("groupNotes", []):
+        if str(row.get("account_id")) not in id_sets["accounts"]:
+            raise ValueError("备份中的分组备注号主引用不存在")
+    for row in data.get("carePlans", []):
+        if not row.get("deleted"):
+            _normalize_imported_care_plan_tasks(row.get("tasks", "[]"))
     return data
 
 
 def _write_pre_import_snapshot() -> None:
     snapshot = build_backup_payload()
-    if not snapshot["data"]["accounts"] and not snapshot["data"]["records"]:
+    if not any(snapshot["data"].values()):
         return
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = DB_PATH.parent / f"pre-import-{stamp}.json"
@@ -1474,15 +1540,18 @@ def import_backup(payload: dict) -> None:
         key = lambda v: None if v is None else str(v)
 
         for row in data.get("accounts", []):
+            deleted = int(bool(row.get("deleted", 0)))
             cur = connection.execute(
                 "INSERT INTO accounts(name,owner,notes,proxy_until,active,deleted,sort_order,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 (row.get("name", ""), row.get("owner", ""), row.get("notes", ""),
-                 row.get("proxy_until"), row.get("active", 1), row.get("deleted", 0),
+                 row.get("proxy_until"), 0 if deleted else row.get("active", 1), deleted,
                  row.get("sort_order", 0), row.get("created_at", now_text())),
             )
             if row.get("id") is not None:
                 acc_map[key(row.get("id"))] = cur.lastrowid
         for row in data.get("customTags", []):
+            if row.get("deleted"):
+                continue
             cur = connection.execute(
                 "INSERT INTO custom_task_tags(name,category,duration_days,start_date,created_at) VALUES(?,?,?,?,?)",
                 (row.get("name"), row.get("category", "大活动"),
@@ -1491,16 +1560,27 @@ def import_backup(payload: dict) -> None:
             if row.get("id") is not None:
                 tag_map[key(row.get("id"))] = cur.lastrowid
         for row in data.get("carePlans", []):
+            if row.get("deleted"):
+                continue
             connection.execute(
                 "INSERT OR IGNORE INTO care_plans(name,tasks,created_at) VALUES(?,?,?)",
-                (row.get("name"), row.get("tasks", "[]"), row.get("created_at", now_text())),
+                (
+                    row.get("name"),
+                    _normalize_imported_care_plan_tasks(row.get("tasks", "[]")),
+                    row.get("created_at", now_text()),
+                ),
             )
         for row in data.get("tasks", []):
+            recurrence = row.get("recurrence", "daily")
+            next_due = row.get("next_due")
+            if recurrence == "manual":
+                recurrence = "once"
+                next_due = next_due or game_today().isoformat()
             cur = connection.execute(
                 "INSERT INTO tasks(account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (acc_map.get(key(row.get("account_id"))), row.get("name", ""),
-                 row.get("recurrence", "daily"), row.get("interval_days"), row.get("monthly_day"),
-                 row.get("next_due"), row.get("notes", ""), row.get("active", 1),
+                 recurrence, row.get("interval_days"), row.get("monthly_day"),
+                 next_due, row.get("notes", ""), row.get("active", 1),
                  row.get("sort_order", 0), tag_map.get(key(row.get("custom_tag_id"))),
                  row.get("created_at", now_text())),
             )
@@ -1694,7 +1774,8 @@ def set_account_custom_tag(account_id: int, payload: dict) -> None:
         if not tag:
             raise ValueError("自定义任务标签不存在")
         account = connection.execute(
-            "SELECT id FROM accounts WHERE id = ? AND active = 1", (account_id,)
+            "SELECT id FROM accounts WHERE id = ? AND active = 1 AND deleted = 0",
+            (account_id,),
         ).fetchone()
         if not account:
             raise LookupError("没有找到该号主")
@@ -1769,7 +1850,7 @@ def reorder_accounts(payload: dict) -> None:
     with db_connection() as connection:
         active_ids = {
             row[0] for row in connection.execute(
-                "SELECT id FROM accounts WHERE active = 1"
+                "SELECT id FROM accounts WHERE active = 1 AND deleted = 0"
             )
         }
         if set(account_ids) != active_ids:
@@ -1806,7 +1887,8 @@ def create_task(payload: dict) -> dict:
     notes = str(payload.get("notes", "")).strip()[:500]
     with db_connection() as connection:
         account = connection.execute(
-            "SELECT id FROM accounts WHERE id = ? AND active = 1", (account_id,)
+            "SELECT id FROM accounts WHERE id = ? AND active = 1 AND deleted = 0",
+            (account_id,),
         ).fetchone()
         if not account:
             raise ValueError("请选择有效的号主")
@@ -1877,7 +1959,8 @@ def set_account_task_tag(account_id: int, payload: dict) -> None:
 
     with db_connection() as connection:
         account = connection.execute(
-            "SELECT id FROM accounts WHERE id = ? AND active = 1", (account_id,)
+            "SELECT id FROM accounts WHERE id = ? AND active = 1 AND deleted = 0",
+            (account_id,),
         ).fetchone()
         if not account:
             raise LookupError("没有找到该号主")

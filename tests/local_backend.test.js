@@ -2,6 +2,8 @@
 // 运行：npm install && npm test（需要 fake-indexeddb，仅开发期依赖，不影响桌面/移动端运行时）。
 "use strict";
 
+process.env.TZ = "Australia/Sydney";
+
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -371,6 +373,157 @@ test("local-backend.js 业务逻辑", async (t) => {
       (t2) => t2.account_id === acc3.id && t2.name === "方案活动A"
     );
     assert.equal(activityTask.custom_tag_id, bigTag.id, "活动任务应正确关联到对应的自定义标签 id");
+  });
+});
+
+test("PWA 边界条件与原子写入", async (t) => {
+  await t.test("精确冷却按次日 04:00 划分游戏日", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/import", "POST", {
+      accounts: [{ id: "game-day-account", name: "游戏日边界号", active: 1, sort_order: 0 }],
+      tasks: [
+        { id: "early-task", account_id: "game-day-account", name: "质变仪", recurrence: "interval", interval_days: 7, next_due: "2026-06-21T02:00", active: 1, sort_order: 2 },
+        { id: "reset-task", account_id: "game-day-account", name: "探索派遣", recurrence: "interval", next_due: "2026-06-21T04:00", active: 1, sort_order: 5 },
+      ],
+      records: [], customTags: [], carePlans: [], storyTasks: [], groupNotes: [],
+    });
+
+    const juneTwentieth = await api("/api/state?date=2026-06-20", "GET");
+    assert.ok(juneTwentieth.dueTasks.some((task) => task.name === "质变仪"));
+    assert.equal(juneTwentieth.dueTasks.some((task) => task.name === "探索派遣"), false);
+    const juneTwentyFirst = await api("/api/state?date=2026-06-21", "GET");
+    assert.ok(juneTwentyFirst.dueTasks.some((task) => task.name === "探索派遣"));
+  });
+
+  await t.test("彻底删除的号主不能复活，关联剧情任务不再显示", async () => {
+    await api("/api/reset", "POST", {});
+    const account = await api("/api/accounts", "POST", { name: "删除状态测试号" });
+    await api("/api/story-tasks", "POST", {
+      accountId: account.id,
+      name: "关联剧情任务",
+      taskType: "world",
+    });
+    await api(`/api/accounts/${account.id}`, "DELETE", {});
+    await api(`/api/accounts/${account.id}/purge`, "POST", {});
+
+    await assert.rejects(
+      api(`/api/accounts/${account.id}/reactivate`, "POST", {}),
+      /没有找到该号主/
+    );
+    const current = await api(`/api/state?date=${gameToday()}`, "GET");
+    assert.equal(current.accounts.length, 0);
+    assert.equal(current.storyTasks.length, 0);
+  });
+
+  await t.test("失效托管方案不会留下创建了一半的号主", async () => {
+    await api("/api/reset", "POST", {});
+    await assert.rejects(
+      api("/api/accounts", "POST", { name: "不应被创建", planId: "missing-plan" }),
+      /托管方案不存在/
+    );
+    const backup = await api("/api/export", "GET");
+    assert.equal(backup.data.accounts.length, 0);
+    assert.equal(backup.data.tasks.length, 0);
+  });
+
+  await t.test("只有独立剧情任务时也会创建导入前快照", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/story-tasks", "POST", {
+      ownerName: "临时号主",
+      name: "快照剧情任务",
+      taskType: "world",
+    });
+    await api("/api/import", "POST", simpleBackup("导入目标", 3001));
+
+    const snapshots = await api("/api/import-snapshots", "GET");
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0].accountCount, 0);
+    assert.equal(snapshots[0].recordCount, 0);
+    assert.equal(snapshots[0].storyTaskCount, 1);
+  });
+
+  await t.test("旧版 manual 任务导入后会转为可见的一次性任务", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/import", "POST", {
+      accounts: [{ id: "legacy-account", name: "旧备份号", active: 1, sort_order: 0 }],
+      tasks: [{ id: "legacy-manual-task", account_id: "legacy-account", name: "旧专项任务", recurrence: "manual", active: 1 }],
+      records: [], customTags: [], carePlans: [], storyTasks: [], groupNotes: [],
+    });
+
+    const current = await api(`/api/state?date=${gameToday()}`, "GET");
+    const task = current.dueTasks.find((item) => item.name === "旧专项任务");
+    assert.ok(task);
+    assert.equal(task.recurrence, "once");
+  });
+
+  await t.test("软删除的托管方案导入后保持隐藏", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/import", "POST", {
+      accounts: [], tasks: [], records: [], customTags: [], storyTasks: [], groupNotes: [],
+      carePlans: [{ id: "deleted-plan", name: "已删除方案", tasks: '["体力"]', deleted: 1 }],
+    });
+
+    const current = await api(`/api/state?date=${gameToday()}`, "GET");
+    assert.equal(current.carePlans.length, 0);
+    const backup = await api("/api/export", "GET");
+    assert.equal(backup.data.carePlans[0].deleted, 1);
+  });
+
+  await t.test("号主、活动和托管方案名称保持唯一", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/accounts", "POST", { name: "唯一号主" });
+    await assert.rejects(api("/api/accounts", "POST", { name: "唯一号主" }), /名称已存在/);
+
+    await api("/api/custom-tags", "POST", {
+      name: "唯一活动",
+      category: "大活动",
+      durationDays: 16,
+      startDate: gameToday(),
+    });
+    await assert.rejects(
+      api("/api/custom-tags", "POST", { name: "唯一活动", category: "大活动", durationDays: 16, startDate: gameToday() }),
+      /名称已存在/
+    );
+
+    await api("/api/care-plans", "POST", { name: "唯一方案", tasks: ["体力"] });
+    await assert.rejects(
+      api("/api/care-plans", "POST", { name: "唯一方案", tasks: ["狗粮"] }),
+      /名称已存在/
+    );
+  });
+
+  await t.test("一键完成写入失败会整体回滚", async () => {
+    await api("/api/reset", "POST", {});
+    await api("/api/import", "POST", {
+      accounts: [{ id: "atomic-account", name: "原子写入号", active: 1, sort_order: 0 }],
+      tasks: [
+        { id: "atomic-task-1", account_id: "atomic-account", name: "体力", recurrence: "daily", active: 1, sort_order: 0 },
+        { id: "atomic-task-2", account_id: "atomic-account", name: "狗粮", recurrence: "daily", active: 1, sort_order: 1 },
+      ],
+      records: [], customTags: [], carePlans: [], storyTasks: [], groupNotes: [],
+    });
+    const before = await api(`/api/state?date=${gameToday()}`, "GET");
+    const taskIds = before.dueTasks.map((task) => task.id);
+    const originalPut = IDBObjectStore.prototype.put;
+    let recordWrites = 0;
+    IDBObjectStore.prototype.put = function (...args) {
+      if (this.name === "task_records" && ++recordWrites === 2) {
+        throw new Error("模拟批量写入失败");
+      }
+      return originalPut.apply(this, args);
+    };
+
+    try {
+      await assert.rejects(
+        api("/api/tasks/complete-all", "POST", { date: gameToday(), taskIds }),
+        /模拟批量写入失败/
+      );
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+
+    const after = await api("/api/export", "GET");
+    assert.equal(after.data.records.length, 0);
   });
 });
 
