@@ -92,8 +92,11 @@ test("desktop and PWA browser workflows", { timeout: 120000 }, async (t) => {
           await responseA;
           await page.locator('#credentialsForm button[type="submit"]').click();
           assert.equal(await page.evaluate(async (id) => (await api(`/api/accounts/${id}/credentials`)).username, ids.b), "synthetic-B");
-          await page.waitForFunction(() => !document.querySelector("#credentialsDialog").open);
-          assert.equal(await page.locator("#credentialsPassword").inputValue(), "");
+          // The open flag changes before the queued close listener clears credentials.
+          await page.waitForFunction(() => !document.querySelector("#credentialsDialog").open && state.editingCredentialsAccountId === null);
+          for (const field of ["#credentialsAccountId", "#credentialsUsername", "#credentialsPassword", "#credentialsNote"]) {
+            assert.equal(await page.locator(field).inputValue(), "");
+          }
 
           await page.locator('[data-view="today"]').click();
           let releaseDate, requestedDate;
