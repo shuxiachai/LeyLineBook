@@ -1,0 +1,26 @@
+{
+  "valid": {
+    "accounts": [{"id": 1, "name": "Contract account", "active": 1}],
+    "tasks": [{"id": 1, "account_id": 1, "name": "Monthly task", "recurrence": "monthly", "monthly_day": 1, "next_due": "2026-07-01"}],
+    "records": [{"id": 1, "task_id": 1, "task_date": "2026-06-01", "completed_at": "2026-06-01T12:00:00", "previous_next_due": "2026-06-01", "note": ""}],
+    "settings": {"versionAnchorDate": "2026-06-03"}
+  },
+  "invalid": [
+    {"collection": "tasks", "field": "monthly_day", "value": 99},
+    {"collection": "tasks", "field": "monthly_day", "value": "1"},
+    {"collection": "tasks", "field": "next_due", "value": "2026-02-30"},
+    {"collection": "tasks", "field": "next_due", "value": "2026-02-30T12:00"},
+    {"collection": "tasks", "field": "next_due", "value": "2026-06-01T25:00"},
+    {"collection": "tasks", "field": "next_due", "value": "2026-06-01T12:00"},
+    {"collection": "tasks", "field": "recurrence", "value": "unknown"},
+    {"collection": "tasks", "field": "recurrence", "value": []},
+    {"collection": "tasks", "field": "notes", "value": {}},
+    {"collection": "accounts", "field": "active", "value": 2},
+    {"collection": "accounts", "field": "sort_order", "value": "0"},
+    {"collection": "accounts", "field": "proxy_until", "value": "2026-02-30"},
+    {"collection": "records", "field": "task_date", "value": ""},
+    {"collection": "records", "field": "previous_next_due", "value": "invalid"},
+    {"collection": "records", "field": "previous_next_due", "value": "2026-06-01T12:00"},
+    {"collection": "settings", "field": "versionAnchorDate", "value": "invalid"}
+  ]
+}

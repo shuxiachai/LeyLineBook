@@ -1,5 +1,7 @@
 const state = {
   selectedDate: localDateString(gameDate()),
+  loadingDate: false,
+  followToday: true,
   data: null,
   currentView: "today",
   editingTaskId: null,
@@ -17,6 +19,9 @@ const state = {
 };
 let stateRequestSequence = 0;
 let historyRequestSequence = 0;
+let credentialsRequestSequence = 0;
+let credentialsReady = false;
+let storySubmitting = false;
 const isPwaMode = Boolean(window.LOCAL_BACKEND);
 
 const recurrenceLabels = {
@@ -476,6 +481,10 @@ function escapeHtml(value) {
 }
 
 async function api(path, options = {}) {
+  if (options.body && /\/api\/tasks\/(?:[^/]+\/toggle|complete-all)$/.test(path)) {
+    const payload = JSON.parse(options.body);
+    if (payload.date !== requireLoadedDate()) throw new Error("日期已改变，请重新操作");
+  }
   if (window.LOCAL_BACKEND) {
     try {
       return await window.LOCAL_BACKEND.handle(path, options);
@@ -485,7 +494,7 @@ async function api(path, options = {}) {
   }
   const response = await fetch(path, {
     ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", "X-LeyLineBook-Session": sessionStorage.getItem("leylinebook-session") || "", ...(options.headers || {}) },
   });
   const result = await response.json();
   if (!response.ok || !result.success) {
@@ -520,20 +529,37 @@ function confirmAction({ title = "请确认", message, confirmText = "确认" })
 async function loadState() {
   const requestedDate = state.selectedDate;
   const requestId = ++stateRequestSequence;
+  state.loadingDate = true;
+  document.querySelector("#completeAll").disabled = true;
   let data;
   try {
     data = await api(`/api/state?date=${encodeURIComponent(requestedDate)}`);
   } catch (error) {
     if (requestId !== stateRequestSequence) return;
     throw error;
+  } finally {
+    if (requestId === stateRequestSequence) state.loadingDate = false;
   }
   if (requestId !== stateRequestSequence || requestedDate !== state.selectedDate) return;
   state.data = data;
+  document.querySelector("#completeAll").disabled = false;
   renderToday();
   renderAccounts();
   renderActivities();
   renderStoryTasks();
   renderHistoryAccountFilter();
+}
+
+function requireLoadedDate() {
+  if (state.loadingDate || !state.data || state.data.date !== state.selectedDate) {
+    throw new Error("日期数据尚未加载完成，请稍后重试");
+  }
+  return state.data.date;
+}
+
+async function refreshAfterSave(message) {
+  try { await loadState(); showToast(message); }
+  catch { showToast(`${message}，但列表刷新失败，请刷新页面`); }
 }
 
 function renderHistoryAccountFilter() {
@@ -631,7 +657,7 @@ function startCooldownTicker() {
       _cooldownTimer = null;
       if (state.currentView === "today") {
         const todayStr = localDateString(gameDate());
-        if (state.selectedDate < todayStr) {
+        if (state.followToday && state.selectedDate !== todayStr) {
           state.selectedDate = todayStr;
           document.querySelector("#selectedDate").value = todayStr;
         }
@@ -819,6 +845,7 @@ function renderStoryTasks() {
 }
 
 async function addStoryTask() {
+  if (storySubmitting) return;
   const name = document.querySelector("#storyName").value.trim();
   const ownerName = document.querySelector("#storyOwner").value.trim();
   if (!ownerName) {
@@ -828,19 +855,25 @@ async function addStoryTask() {
   const matchedAccount = state.data.accounts.find(
     (account) => account.active && account.name === ownerName,
   );
-  await api("/api/story-tasks", {
-    method: "POST",
-    body: JSON.stringify({
-      accountId: matchedAccount?.id || null,
-      ownerName: matchedAccount ? "" : ownerName,
-      name,
-      taskType: state.selectedStoryType,
-      hasBonus: document.querySelector("#storyHasBonus").checked,
-    }),
-  });
-  document.querySelector("#storyName").value = "";
-  await loadState();
-  showToast("剧情任务已添加");
+  storySubmitting = true;
+  document.querySelector("#addStoryTask").disabled = true;
+  try {
+    await api("/api/story-tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        accountId: matchedAccount?.id || null,
+        ownerName: matchedAccount ? "" : ownerName,
+        name,
+        taskType: state.selectedStoryType,
+        hasBonus: document.querySelector("#storyHasBonus").checked,
+      }),
+    });
+    document.querySelector("#storyName").value = "";
+    await refreshAfterSave("剧情任务已添加");
+  } finally {
+    storySubmitting = false;
+    document.querySelector("#addStoryTask").disabled = false;
+  }
 }
 
 function accountOrderFromPage() {
@@ -1128,6 +1161,7 @@ async function saveResinNote(clear) {
 }
 
 function openTransformerUsageDialog(task) {
+  state.transformerDate = requireLoadedDate();
   state.editingTransformerTaskId = task.id;
   const now = new Date();
   if (state.selectedDate !== localDateString(gameDate())) {
@@ -1144,7 +1178,7 @@ async function saveTransformerUsage(event) {
   const usedAt = document.querySelector("#transformerUsedAt").value;
   await api(`/api/tasks/${state.editingTransformerTaskId}/toggle`, {
     method: "POST",
-    body: JSON.stringify({ date: state.selectedDate, completed: true, usedAt }),
+    body: JSON.stringify({ date: state.transformerDate, completed: true, usedAt }),
   });
   document.querySelector("#transformerUsageDialog").close();
   await loadState();
@@ -1152,6 +1186,7 @@ async function saveTransformerUsage(event) {
 }
 
 function openExpeditionUsageDialog(task) {
+  state.expeditionDate = requireLoadedDate();
   state.editingExpeditionTaskId = task.id;
   state.editingExpeditionHours = expeditionHoursFromNotes(task.notes);
   const now = new Date();
@@ -1171,7 +1206,7 @@ async function saveExpeditionUsage(event) {
   const usedAt = document.querySelector("#expeditionUsedAt").value;
   await api(`/api/tasks/${state.editingExpeditionTaskId}/toggle`, {
     method: "POST",
-    body: JSON.stringify({ date: state.selectedDate, completed: true, usedAt }),
+    body: JSON.stringify({ date: state.expeditionDate, completed: true, usedAt }),
   });
   document.querySelector("#expeditionUsageDialog").close();
   await loadState();
@@ -1197,6 +1232,8 @@ async function removeConfiguredTask() {
 }
 
 async function openCredentialsDialog(accountId) {
+  const requestId = ++credentialsRequestSequence;
+  credentialsReady = false;
   const account = state.data.accounts.find((a) => idEq(a.id, accountId));
   state.editingCredentialsAccountId = accountId;
   document.querySelector("#credentialsAccountId").value = accountId;
@@ -1206,18 +1243,24 @@ async function openCredentialsDialog(accountId) {
   document.querySelector("#credentialsPassword").type = "password";
   document.querySelector("#togglePassword").textContent = "显示";
   document.querySelector("#credentialsNote").value = "";
-  const data = await api(`/api/accounts/${accountId}/credentials`);
+  let data;
+  try { data = await api(`/api/accounts/${accountId}/credentials`); }
+  catch (error) { if (requestId === credentialsRequestSequence) throw error; return; }
+  if (requestId !== credentialsRequestSequence || !idEq(accountId, state.editingCredentialsAccountId)) return;
   document.querySelector("#credentialsUsername").value = data.username || "";
   document.querySelector("#credentialsPassword").value = data.password || "";
   document.querySelector("#credentialsNote").value = data.note || "";
   const hasData = data.username || data.password || data.note;
   document.querySelector("#clearCredentials").classList.toggle("hidden", !hasData);
+  credentialsReady = true;
   document.querySelector("#credentialsDialog").showModal();
 }
 
 async function saveCredentials(event) {
   event.preventDefault();
+  const requestId = credentialsRequestSequence;
   const id = document.querySelector("#credentialsAccountId").value;
+  if (!credentialsReady || !idEq(id, state.editingCredentialsAccountId)) throw new Error("凭据尚未加载完成");
   await api(`/api/accounts/${id}/credentials`, {
     method: "PUT",
     body: JSON.stringify({
@@ -1226,18 +1269,24 @@ async function saveCredentials(event) {
       note: document.querySelector("#credentialsNote").value,
     }),
   });
+  if (requestId !== credentialsRequestSequence) return;
   document.querySelector("#credentialsDialog").close();
   showToast("凭据已保存");
 }
 
 async function clearCredentials() {
+  const id = state.editingCredentialsAccountId;
+  const requestId = credentialsRequestSequence;
+  if (!credentialsReady) return;
   const confirmed = await confirmAction({
     title: "清除账号凭据？",
     message: "清除后，该号主保存的账号和密码将永久删除。",
     confirmText: "确认清除",
   });
   if (!confirmed) return;
-  await api(`/api/accounts/${state.editingCredentialsAccountId}/credentials`, { method: "DELETE", body: "{}" });
+  if (requestId !== credentialsRequestSequence || !idEq(id, state.editingCredentialsAccountId)) return;
+  await api(`/api/accounts/${id}/credentials`, { method: "DELETE", body: "{}" });
+  if (requestId !== credentialsRequestSequence) return;
   document.querySelector("#credentialsDialog").close();
   showToast("凭据已清除");
 }
@@ -1366,7 +1415,7 @@ async function saveAccount(event) {
     notes: document.querySelector("#accountNotes").value,
   };
   if (!id && document.querySelector("#accountPlan").value) {
-    payload.planId = Number(document.querySelector("#accountPlan").value);
+    payload.planId = document.querySelector("#accountPlan").value;
   }
   const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
   if (!id && !isPwaMode) {
@@ -1381,8 +1430,7 @@ async function saveAccount(event) {
     }
   }
   document.querySelector("#accountDialog").close();
-  await loadState();
-  showToast(id ? "号主信息已更新" : "号主已添加");
+  await refreshAfterSave(id ? "号主信息已更新" : "号主已添加");
 }
 
 async function saveTask(event) {
@@ -1404,6 +1452,7 @@ async function saveTask(event) {
 }
 
 async function handleAction(target) {
+  if (target.closest("[data-toggle-task], [data-collect-teapot], [data-complete-account]")) requireLoadedDate();
   const dialogId = target.closest("[data-close-dialog]")?.dataset.closeDialog;
   if (dialogId) {
     document.querySelector(`#${dialogId}`).close();
@@ -1511,6 +1560,7 @@ async function handleAction(target) {
 
   const collectTeapotId = target.closest("[data-collect-teapot]")?.dataset.collectTeapot;
   if (collectTeapotId) {
+    const operationDate = requireLoadedDate();
     if (state.selectedDate !== localDateString(gameDate())) return;
     const confirmed = await confirmAction({
       title: "提前收取壶的奖励？",
@@ -1520,7 +1570,7 @@ async function handleAction(target) {
     if (!confirmed) return;
     await api(`/api/tasks/${collectTeapotId}/toggle`, {
       method: "POST",
-      body: JSON.stringify({ date: state.selectedDate, completed: true, restartCycle: true }),
+      body: JSON.stringify({ date: operationDate, completed: true, restartCycle: true }),
     });
     await loadState();
     showToast("已提前收取，下次收取日期已从今天顺延");
@@ -1981,14 +2031,23 @@ function bindEvents() {
   document.addEventListener("click", (event) => handleAction(event.target).catch((error) => showToast(error.message)));
   bindAccountSorting();
   document.querySelectorAll(".nav-item").forEach((item) => item.addEventListener("click", () => switchView(item.dataset.view)));
-  document.querySelector("#selectedDate").addEventListener("change", async (event) => { state.selectedDate = event.target.value; await loadState(); });
-  document.querySelector("#goToday").addEventListener("click", async () => { state.selectedDate = localDateString(gameDate()); await loadState(); });
+  document.querySelector("#selectedDate").addEventListener("change", (event) => { state.followToday = false; state.selectedDate = event.target.value; loadState().catch((error) => showToast(error.message)); });
+  document.querySelector("#goToday").addEventListener("click", () => { state.followToday = true; state.selectedDate = localDateString(gameDate()); loadState().catch((error) => showToast(error.message)); });
   document.querySelector("#completeAll").addEventListener("click", async () => {
-    const taskIds = state.data.dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).map((task) => task.id);
-    if (!taskIds.length) return;
-    await api("/api/tasks/complete-all", { method: "POST", body: JSON.stringify({ date: state.selectedDate, taskIds }) });
-    await loadState();
-    showToast("当天待办已全部完成");
+    try {
+      const operationDate = requireLoadedDate();
+      const taskIds = state.data.dueTasks.filter((task) => !task.completed && !(task.cooldown_remaining_seconds > 0)).map((task) => task.id);
+      if (!taskIds.length) return;
+      await api("/api/tasks/complete-all", { method: "POST", body: JSON.stringify({ date: operationDate, taskIds }) });
+      await loadState();
+      showToast("当天待办已全部完成");
+    } catch (error) { showToast(error.message); }
+  });
+  document.querySelector("#credentialsDialog").addEventListener("close", () => {
+    ++credentialsRequestSequence;
+    credentialsReady = false;
+    state.editingCredentialsAccountId = null;
+    for (const id of ["#credentialsAccountId", "#credentialsUsername", "#credentialsPassword", "#credentialsNote"]) document.querySelector(id).value = "";
   });
   document.querySelector("#addAccount").addEventListener("click", () => openAccountDialog());
   document.querySelector("#managePlans").addEventListener("click", openCarePlanDialog);
@@ -2183,7 +2242,7 @@ function bindEvents() {
 }
 
 async function sendHeartbeat() {
-  try { await fetch("/api/heartbeat"); } catch { /* server gone */ }
+  try { await api("/api/heartbeat"); } catch { /* server gone */ }
 }
 
 function startHeartbeat() {
@@ -2198,6 +2257,13 @@ function registerServiceWorker() {
 }
 
 async function initialize() {
+  if (!isPwaMode) {
+    const token = new URLSearchParams(location.hash.slice(1)).get("session");
+    if (token) {
+      sessionStorage.setItem("leylinebook-session", token);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
   applyTheme(localStorage.getItem("task-recorder-theme") || "green", false, false);
   const now = gameDate();
   document.querySelector("#historyStart").value = "";
@@ -2207,11 +2273,12 @@ async function initialize() {
   startHeartbeat();
   await initializeCharacterBackground();
   await loadState();
+  if (!isPwaMode) await api("/api/ready", { method: "POST", body: "{}" });
   window.setInterval(() => {
     if (state.currentView !== "today") return;
     if (document.querySelector("dialog[open]")) return;
     const todayStr = localDateString(gameDate());
-    if (state.selectedDate < todayStr) {
+    if (state.followToday && state.selectedDate !== todayStr) {
       state.selectedDate = todayStr;
       document.querySelector("#selectedDate").value = todayStr;
     }

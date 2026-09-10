@@ -8,6 +8,8 @@
 
 GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无需安装 Python，也不依赖 `_internal` 文件夹。首次启动时需要解压内置运行资源，因此可能比后续启动稍慢。打包版可在“设置与备份”中检查 GitHub Releases 新版本。
 
+版本变更与升级注意事项见 [更新日志](CHANGELOG.md)。
+
 若系统缺少 WebView2 运行时（极少见），程序会自动回退到浏览器模式；也可以用 `--browser` 参数强制使用浏览器打开。浏览器模式下关闭所有页面后，后台程序会在约 80 秒内自动退出；任一模式下都可以进入“设置与备份”，点击“关闭程序”立即停止。
 
 单文件 EXE 的数据保存在 `%APPDATA%\LeyLineBook\task_records.db`，日志保存在同一目录。首次升级时，如果 EXE 旁存在旧数据库且新目录尚无数据库，程序会自动复制过去。删除数据库后，程序只会创建空数据库，不会读取 Excel 或生成内置名单。本程序只支持自身 JSON 备份导入，不提供 Excel 导入功能。
@@ -54,6 +56,8 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 
 “爱可菲料理”每周任意时间完成一次即可，完成状态保持到下周一 04:00，并计入每日进度。
 
+探索派遣按实际收取时间记录轮次，支持同一游戏日内多轮 15/20 小时派遣。重复提交同一收取时间不会重复计数。间隔、每月和版本周期任务需要从最新记录开始依次撤销，避免旧记录覆盖后续冷却；存在较新完成记录时不支持向前补记周期任务。
+
 ## 剧情任务
 
 - 魔神任务：可选额外奖励，截止到当前版本末周二 15:00
@@ -66,6 +70,10 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 ## 数据安全
 
 所有数据都在本机。Windows 版账号凭据使用 DPAPI 加密，仅能由保存凭据时的 Windows 用户账户解密；PWA 不存储凭据，并会在数据库升级时清除早期版本可能留下的明文字段。导出的 JSON 备份不包含凭据，导入后需要重新填写。请勿在普通备注中填写密码或验证码，也不要把真实数据库上传到 GitHub。建议定期导出 JSON 备份；数据库中的加密凭据换电脑或更换 Windows 用户后无法解密。
+
+从 v3.0.5 起，桌面 API 使用启动会话凭证，凭证通过启动链接的 fragment 交付，页面接收后会移除该 fragment；服务端不提供公开取回凭证的接口。实例识别使用挑战响应，Windows 临时目录中的实例凭证由 DPAPI 加密。请通过启动器或 `python app.py --browser` 打开应用，单独输入本地端口地址不能建立新会话。这些措施不用于抵御已经控制当前 Windows 用户会话的恶意程序。
+
+从 v3.0.5 起，导出备份格式为 `schemaVersion: 3`，包含版本周期基准日和派遣轮次信息，仍可导入格式 2 及无版本号的旧备份。**v3.0.4 及更早发行版不能导入格式 3；跨端交换新备份时，两端都须使用支持格式 3 的代码版本。** 旧备份缺少版本基准日时采用默认基准日。导入先检查业务字段与关联，再在事务中替换；重建旧数据库表前会保留 `*-pre-migration-*.db` 备份。
 
 ## 演示数据
 
@@ -93,8 +101,12 @@ python -m PyInstaller --clean -y LeyLineBook.spec
 ```powershell
 npm install
 npm test
+npx playwright install chromium
+npm run test:browser
 ```
 
-仓库包含三条 GitHub Actions 流水线：`CI` 在 Windows 上执行双端测试、PyInstaller 打包和 EXE 启动冒烟；`Release` 在推送与 `APP_VERSION` 一致的 `vX.Y.Z` 标签时发布 EXE 与同名 `.sha256` 文件；`Deploy PWA` 在 `main` 分支的静态资源变更通过测试后部署 `static/` 到 GitHub Pages。
+浏览器回归使用独立临时数据库，覆盖桌面与手机宽度下的方案套用、凭据乱序、日期切换、重复提交和备份恢复；不会读取用户数据库。也可设置 `PLAYWRIGHT_CHANNEL=msedge` 使用已安装的 Edge。业务字段的双端导入约束通过 `tests/fixtures/backup_cases.json` 验证。`LEYLINEBOOK_DATA_DIR` 可指定隔离数据目录，设置后不会自动复制旧数据库；自动化场景可通过 `LEYLINEBOOK_SESSION_TOKEN` 传入仅供该进程使用的高熵会话凭证。
+
+仓库包含三条 GitHub Actions 流水线：`CI` 在 Windows 上执行双端测试、浏览器回归、PyInstaller 打包和 EXE 启动冒烟；`Release` 在相同测试通过且标签与 `APP_VERSION` 一致时发布 EXE 与同名 `.sha256` 文件，任一外部测试命令失败都会阻止打包发布；`Deploy PWA` 在 `main` 分支的静态资源变更通过其测试后部署 `static/` 到 GitHub Pages。
 
 数据库、日志、缓存、`node_modules` 和打包结果均不应提交到源码仓库，具体规则见 `.gitignore`。

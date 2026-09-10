@@ -37,8 +37,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run desktop tests
         run: python -m unittest discover -s tests -p "test_*.py"
@@ -46,12 +49,22 @@ jobs:
       - name: Run PWA tests
         run: npm test
 
+      - name: Install test browser
+        run: npx playwright install chromium
+
+      - name: Run browser regressions
+        run: npm run test:browser
+
       - name: Check source syntax
         run: |
           python -m py_compile app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/app.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/local-backend.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/sw.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows executable
         run: pyinstaller --noconfirm --clean LeyLineBook.spec
@@ -59,19 +72,22 @@ jobs:
       - name: Smoke-test packaged executable
         shell: pwsh
         run: |
+          $env:LEYLINEBOOK_SESSION_TOKEN = [guid]::NewGuid().ToString('N')
+          $env:LEYLINEBOOK_DATA_DIR = Join-Path $env:RUNNER_TEMP ('leylinebook-smoke-' + [guid]::NewGuid().ToString('N'))
+          $headers = @{ 'X-LeyLineBook-Session' = $env:LEYLINEBOOK_SESSION_TOKEN }
           $process = Start-Process -FilePath ".\dist\LeyLineBook.exe" -ArgumentList @("--no-browser", "--port", "18765") -PassThru -WindowStyle Hidden
           try {
             $ready = $false
             for ($attempt = 0; $attempt -lt 30; $attempt++) {
               if ($process.HasExited) { break }
               try {
-                $response = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/state" -TimeoutSec 2
+                $response = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/state" -Headers $headers -TimeoutSec 2
                 if ($response.success) { $ready = $true; break }
               } catch {}
               Start-Sleep -Milliseconds 500
             }
             if (-not $ready) { throw "Packaged executable did not become healthy." }
-            Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/shutdown" -Method Post -ContentType "application/json" -Body "{}" | Out-Null
+            Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/shutdown" -Headers $headers -Method Post -ContentType "application/json" -Body "{}" | Out-Null
             $process.WaitForExit(10000) | Out-Null
           } finally {
             if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }

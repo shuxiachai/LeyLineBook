@@ -5,6 +5,7 @@ import base64
 import ctypes
 import errno
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -20,8 +21,9 @@ import threading
 import time
 import urllib.request
 import webbrowser
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from datetime import date, datetime, timedelta
+from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,12 +35,14 @@ STATIC_DIR = RUNTIME_DIR / "static"
 
 _appdata = os.environ.get("APPDATA") if getattr(sys, "frozen", False) else None
 DATA_DIR = (Path(_appdata) / "LeyLineBook") if _appdata else APP_DIR
+if os.environ.get("LEYLINEBOOK_DATA_DIR"):
+    DATA_DIR = Path(os.environ["LEYLINEBOOK_DATA_DIR"]).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "task_records.db"
 LOG_PATH = DATA_DIR / "task_recorder.log"
 
 _legacy_db = APP_DIR / "task_records.db"
-if APP_DIR != DATA_DIR and _legacy_db.exists() and not DB_PATH.exists():
+if not os.environ.get("LEYLINEBOOK_DATA_DIR") and APP_DIR != DATA_DIR and _legacy_db.exists() and not DB_PATH.exists():
     shutil.copy2(_legacy_db, DB_PATH)
 
 TASK_TAG_PRESETS = {
@@ -64,10 +68,10 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "3.0.4"
+APP_VERSION = "3.0.5"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 BACKUP_FORMAT = "leylinebook-backup"
-BACKUP_SCHEMA_VERSION = 2
+BACKUP_SCHEMA_VERSION = 3
 MAX_UPDATE_SIZE = 250 * 1024 * 1024
 ALLOWED_UPDATE_HOSTS = frozenset(
     ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "github-releases.githubusercontent.com")
@@ -76,6 +80,7 @@ ALLOWED_UPDATE_HOSTS = frozenset(
 _last_heartbeat: float = 0.0
 _latest_release: dict | None = None
 _update_state: dict = {"status": "idle", "downloaded": 0, "total": 0, "error": ""}
+_update_lock = threading.Lock()
 
 
 def now_text() -> str:
@@ -252,8 +257,13 @@ def check_for_update() -> dict:
 
 
 def start_update() -> None:
+    with _update_lock:
+        _start_update_locked()
+
+
+def _start_update_locked() -> None:
     global _update_state
-    if _update_state["status"] == "downloading":
+    if _update_state["status"] in {"downloading", "done"}:
         return
     release = dict(_latest_release or {})
     if not release:
@@ -333,20 +343,84 @@ def dpapi_unprotect(ciphertext: str) -> str:
 
 
 @contextmanager
-def db_connection():
+def db_connection(*, write=True, foreign_keys=True):
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
     try:
+        connection.execute(f"PRAGMA foreign_keys = {'ON' if foreign_keys else 'OFF'}")
+        connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         yield connection
+        if not foreign_keys and connection.execute("PRAGMA foreign_key_check").fetchone():
+            raise ValueError("数据库关联检查失败，原数据已保留")
         connection.commit()
+    except BaseException:
+        connection.rollback()
+        raise
     finally:
         connection.close()
 
 
+def execute_sql_script(connection, script):
+    # SQLite recognizes statement boundaries; unlike executescript this never commits.
+    statement = ""
+    for character in script:
+        statement += character
+        if character == ";" and sqlite3.complete_statement(statement):
+            connection.execute(statement)
+            statement = ""
+    if statement.strip():
+        connection.execute(statement)
+
+
+def transactional_migration(function):
+    @wraps(function)
+    def migrate(connection):
+        owns_transaction = not connection.in_transaction
+        foreign_keys = connection.execute("PRAGMA foreign_keys").fetchone()[0]
+        if owns_transaction:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+        connection.execute("SAVEPOINT schema_migration")
+        try:
+            function(connection)
+            if connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise ValueError("迁移后的关联检查失败")
+            connection.execute("RELEASE schema_migration")
+            if owns_transaction:
+                connection.commit()
+        except BaseException:
+            connection.execute("ROLLBACK TO schema_migration")
+            connection.execute("RELEASE schema_migration")
+            if owns_transaction:
+                connection.rollback()
+            raise
+        finally:
+            if owns_transaction:
+                connection.execute(f"PRAGMA foreign_keys = {foreign_keys}")
+    return migrate
+
+
+def backup_before_schema_migration():
+    if not DB_PATH.exists():
+        return
+    with closing(sqlite3.connect(DB_PATH)) as source:
+        task_sql = source.execute("SELECT sql FROM sqlite_master WHERE name = 'tasks'").fetchone()
+        story = {row[1]: row for row in source.execute("PRAGMA table_info(story_tasks)")}
+        needs_migration = bool(task_sql and ("monthly_day" not in task_sql[0] or "'weekly'" not in task_sql[0]))
+        needs_migration |= bool(story and ("owner_name" not in story or story["account_id"][3]))
+        if not needs_migration:
+            return
+        backup = DB_PATH.with_name(f"{DB_PATH.stem}-pre-migration-{datetime.now():%Y%m%d-%H%M%S-%f}.db")
+        with closing(sqlite3.connect(backup)) as destination:
+            source.backup(destination)
+            if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise ValueError("升级前备份校验失败，已停止迁移")
+
+
 def initialize_database() -> None:
-    with db_connection() as connection:
-        connection.executescript(
+    backup_before_schema_migration()
+    with db_connection(foreign_keys=False) as connection:
+        execute_sql_script(connection,
             """
             CREATE TABLE IF NOT EXISTS app_meta (
                 key TEXT PRIMARY KEY,
@@ -448,6 +522,7 @@ def initialize_database() -> None:
         migrate_group_notes_to_tasks(connection)
 
 
+@transactional_migration
 def migrate_tasks_schema(connection: sqlite3.Connection) -> None:
     columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)")}
     table_sql = connection.execute(
@@ -460,7 +535,7 @@ def migrate_tasks_schema(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA foreign_keys = OFF")
     connection.execute("DROP TABLE IF EXISTS tasks_v3")
     connection.execute("DROP TABLE IF EXISTS task_records_v3")
-    connection.executescript(
+    execute_sql_script(connection,
         """
         CREATE TABLE tasks_v3 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -498,7 +573,7 @@ def migrate_tasks_schema(connection: sqlite3.Connection) -> None:
         FROM tasks
         """
     )
-    connection.executescript(
+    execute_sql_script(connection,
         """
         INSERT INTO task_records_v3
         SELECT id, task_id, task_date, completed_at, previous_next_due, note
@@ -568,10 +643,6 @@ def get_version_anchor(connection: sqlite3.Connection) -> str:
         "SELECT value FROM app_meta WHERE key = 'version_start_date'"
     ).fetchone()
     anchor = legacy[0] if legacy else OFFICIAL_VERSION_ANCHOR
-    connection.execute(
-        "INSERT OR REPLACE INTO app_meta(key, value) VALUES('version_anchor_date', ?)",
-        (anchor,),
-    )
     return anchor
 
 
@@ -728,13 +799,14 @@ def migrate_custom_tags_schema(connection: sqlite3.Connection) -> None:
         connection.execute("ALTER TABLE custom_task_tags ADD COLUMN start_date TEXT")
 
 
+@transactional_migration
 def migrate_story_tasks_schema(connection: sqlite3.Connection) -> None:
     columns = {row[1]: row for row in connection.execute("PRAGMA table_info(story_tasks)")}
     if "owner_name" in columns and columns["account_id"][3] == 0:
         return
 
     owner_expression = "owner_name" if "owner_name" in columns else "''"
-    connection.executescript(
+    execute_sql_script(connection,
         f"""
         DROP TABLE IF EXISTS story_tasks_v2;
         CREATE TABLE story_tasks_v2 (
@@ -977,7 +1049,7 @@ def load_state(selected_date: str) -> dict:
                            SELECT 1 FROM task_records current
                            WHERE current.task_id = t.id
                              AND current.task_date = ?
-                             AND current.note = ''
+                             AND (current.note = '' OR current.note LIKE 'expedition:%')
                        ) THEN 1 ELSE 0 END AS completed,
                        CASE WHEN EXISTS(
                            SELECT 1 FROM task_records prior WHERE prior.task_id = t.id
@@ -1104,6 +1176,8 @@ def load_state(selected_date: str) -> dict:
                 )
             )
             if precise_due:
+                if task["name"] == "探索派遣" and is_current_game_day and is_due:
+                    task["completed"] = False
                 task["available_at"] = precise_due.isoformat(timespec="minutes")
                 task["cooldown_remaining_seconds"] = max(
                     0, int((precise_due - now).total_seconds())
@@ -1410,8 +1484,7 @@ def reactivate_account(account_id: int) -> None:
 
 def reset_database() -> None:
     with db_connection() as connection:
-        connection.execute("PRAGMA foreign_keys = OFF")
-        connection.executescript("""
+        execute_sql_script(connection, """
             DELETE FROM task_records;
             DELETE FROM tasks;
             DELETE FROM account_group_notes;
@@ -1421,18 +1494,18 @@ def reset_database() -> None:
             DELETE FROM accounts;
             DELETE FROM app_meta;
         """)
-        connection.execute("PRAGMA foreign_keys = ON")
     initialize_database()
 
 
-def build_backup_payload() -> dict:
-    with db_connection() as connection:
+def build_backup_payload(connection=None) -> dict:
+    with (db_connection(write=False) if connection is None else nullcontext(connection)) as connection:
         return {
             "format": BACKUP_FORMAT,
             "schemaVersion": BACKUP_SCHEMA_VERSION,
             "appVersion": APP_VERSION,
             "exportedAt": now_text(),
             "data": {
+                "settings": {"versionAnchorDate": get_version_anchor(connection)},
                 "accounts": [
                     {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
                     for row in connection.execute("SELECT * FROM accounts")
@@ -1455,6 +1528,84 @@ def _normalize_imported_care_plan_tasks(value) -> str:
         raise ValueError("备份中的托管方案数据无效") from error
 
 
+def validate_backup_date(value, *, moment=False):
+    if value in (None, ""):
+        return
+    if not isinstance(value, str):
+        raise ValueError("备份中的日期格式无效")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        date.fromisoformat(value)
+    elif moment and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?", value):
+        datetime.fromisoformat(value)
+    else:
+        raise ValueError("备份中的日期格式无效")
+
+
+def validate_backup_data(data):
+    settings = data.get("settings", {})
+    if not isinstance(settings, dict):
+        raise ValueError("备份中的设置格式无效")
+    if "versionAnchorDate" in settings:
+        if not settings["versionAnchorDate"]:
+            raise ValueError("备份中的版本基准日无效")
+        validate_backup_date(settings["versionAnchorDate"])
+    collections = ("accounts", "tasks", "records", "storyTasks", "customTags", "carePlans", "groupNotes")
+    for collection in collections:
+        names = set()
+        for row in data.get(collection, []):
+            for field, limit in (("name", 100), ("owner", 100), ("owner_name", 100), ("notes", 2000), ("note", 2000)):
+                if field in row and (not isinstance(row[field], str) or len(row[field]) > limit):
+                    raise ValueError(f"备份中的 {field} 字段无效")
+            if collection in {"accounts", "tasks", "storyTasks", "customTags", "carePlans"} and not str(row.get("name", "")).strip():
+                raise ValueError("备份中的名称不能为空")
+            if collection in {"accounts", "customTags", "carePlans"} and (collection == "accounts" or not row.get("deleted")):
+                name = row["name"].strip().lower()
+                if name in names:
+                    raise ValueError("备份中的名称重复")
+                names.add(name)
+            for field in ("active", "deleted", "has_bonus"):
+                if field in row and (not isinstance(row[field], (int, bool)) or row[field] not in (0, 1)):
+                    raise ValueError(f"备份中的 {field} 状态无效")
+            if "sort_order" in row and (type(row["sort_order"]) is not int or not 0 <= row["sort_order"] <= 2147483647):
+                raise ValueError("备份中的排序值无效")
+            for field in ("proxy_until", "start_date", "task_date"):
+                validate_backup_date(row.get(field))
+            for field in ("next_due", "previous_next_due", "completed_at", "bonus_deadline", "created_at"):
+                validate_backup_date(row.get(field), moment=True)
+    for task in data.get("tasks", []):
+        recurrence = task.get("recurrence", "daily")
+        if not isinstance(recurrence, str) or recurrence not in {"daily", "weekly", "interval", "manual", "once", "monthly", "version"}:
+            raise ValueError("备份中的任务类型无效")
+        precise = recurrence == "interval" and task["name"] in {"探索派遣", "质变仪"}
+        validate_backup_date(task.get("next_due"), moment=precise)
+        if recurrence == "monthly" and (type(task.get("monthly_day")) is not int or not 1 <= task["monthly_day"] <= 28):
+            raise ValueError("备份中的每月任务配置无效")
+        if recurrence == "interval" and task["name"] != "探索派遣":
+            if type(task.get("interval_days")) is not int or not 1 <= task["interval_days"] <= 365:
+                raise ValueError("备份中的周期任务配置无效")
+    for tag in data.get("customTags", []):
+        if tag.get("category", "大活动") not in ("大活动", "小活动"):
+            raise ValueError("备份中的活动类型无效")
+        duration = tag.get("duration_days", 16)
+        if type(duration) is not int or not 1 <= duration <= 365:
+            raise ValueError("备份中的活动时长无效")
+    record_keys = set()
+    task_by_id = {str(task["id"]): task for task in data.get("tasks", [])}
+    for record in data.get("records", []):
+        if not record.get("task_date"):
+            raise ValueError("备份中的完成日期不能为空")
+        key = (str(record.get("task_id")), record["task_date"], record.get("note", ""))
+        if key in record_keys:
+            raise ValueError("备份中的完成记录重复")
+        record_keys.add(key)
+        task = task_by_id[str(record["task_id"])]
+        precise = task.get("recurrence") == "interval" and task["name"] in {"探索派遣", "质变仪"}
+        validate_backup_date(record.get("previous_next_due"), moment=precise)
+    for story in data.get("storyTasks", []):
+        if not isinstance(story.get("task_type", "world"), str) or story.get("task_type", "world") not in STORY_TASK_TYPES:
+            raise ValueError("备份中的剧情任务类型无效")
+
+
 def _normalize_backup_payload(payload: dict) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
@@ -1463,7 +1614,7 @@ def _normalize_backup_payload(payload: dict) -> dict:
     else:
         if payload.get("format") != BACKUP_FORMAT:
             raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
-        if payload.get("schemaVersion") != BACKUP_SCHEMA_VERSION:
+        if payload.get("schemaVersion") not in (2, BACKUP_SCHEMA_VERSION):
             version = payload.get("schemaVersion", "未知")
             raise ValueError(f"不支持的备份版本：{version}")
         data = payload.get("data")
@@ -1508,12 +1659,13 @@ def _normalize_backup_payload(payload: dict) -> dict:
     for row in data.get("carePlans", []):
         if not row.get("deleted"):
             _normalize_imported_care_plan_tasks(row.get("tasks", "[]"))
+    validate_backup_data(data)
     return data
 
 
-def _write_pre_import_snapshot() -> None:
-    snapshot = build_backup_payload()
-    if not any(snapshot["data"].values()):
+def _write_pre_import_snapshot(connection=None) -> None:
+    snapshot = build_backup_payload(connection)
+    if not any(isinstance(value, list) and value for value in snapshot["data"].values()):
         return
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     path = DB_PATH.parent / f"pre-import-{stamp}.json"
@@ -1525,9 +1677,8 @@ def _write_pre_import_snapshot() -> None:
 
 def import_backup(payload: dict) -> None:
     data = _normalize_backup_payload(payload)
-    _write_pre_import_snapshot()
-    with db_connection() as connection:
-        connection.execute("PRAGMA foreign_keys = OFF")
+    with db_connection(foreign_keys=False) as connection:
+        _write_pre_import_snapshot(connection)
         for table in ("task_records", "tasks", "account_group_notes",
                       "story_tasks", "custom_task_tags", "care_plans", "accounts"):
             connection.execute(f"DELETE FROM {table}")
@@ -1580,7 +1731,7 @@ def import_backup(payload: dict) -> None:
                 "INSERT INTO tasks(account_id,name,recurrence,interval_days,monthly_day,next_due,notes,active,sort_order,custom_tag_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (acc_map.get(key(row.get("account_id"))), row.get("name", ""),
                  recurrence, row.get("interval_days"), row.get("monthly_day"),
-                 next_due, row.get("notes", ""), row.get("active", 1),
+                 next_due, row.get("notes", ""), 0 if row.get("deleted") else row.get("active", 1),
                  row.get("sort_order", 0), tag_map.get(key(row.get("custom_tag_id"))),
                  row.get("created_at", now_text())),
             )
@@ -1600,7 +1751,7 @@ def import_backup(payload: dict) -> None:
                 "INSERT INTO story_tasks(account_id,owner_name,name,task_type,has_bonus,bonus_deadline,completed_at,active,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
                 (acc_map.get(key(row.get("account_id"))), row.get("owner_name", ""),
                  row.get("name", ""), row.get("task_type", "world"), row.get("has_bonus", 0),
-                 row.get("bonus_deadline"), row.get("completed_at"), row.get("active", 1),
+                 row.get("bonus_deadline"), row.get("completed_at"), 0 if row.get("deleted") else row.get("active", 1),
                  row.get("created_at", now_text())),
             )
         for row in data.get("groupNotes", []):
@@ -1611,7 +1762,10 @@ def import_backup(payload: dict) -> None:
                 "INSERT OR IGNORE INTO account_group_notes(account_id,category,note,created_at) VALUES(?,?,?,?)",
                 (acc_new, row.get("category", "daily"), row.get("note", ""), row.get("created_at", now_text())),
             )
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT OR REPLACE INTO app_meta(key, value) VALUES('version_anchor_date', ?)",
+            ((data.get("settings") or {}).get("versionAnchorDate", OFFICIAL_VERSION_ANCHOR),),
+        )
 
 
 def list_custom_tags() -> list[dict]:
@@ -2054,7 +2208,20 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
         ).fetchone()
         if not task:
             raise LookupError("没有找到该任务")
-        if task["recurrence"] == "weekly":
+        is_expedition = task["name"] == "探索派遣" and task["recurrence"] == "interval"
+        task_records = connection.execute(
+            "SELECT * FROM task_records WHERE task_id = ? ORDER BY task_date DESC, completed_at DESC, id DESC", (task_id,)
+        ).fetchall()
+        precise_expedition = None
+        if is_expedition:
+            if completed:
+                precise_expedition = optional_local_datetime(used_at) or datetime.now().replace(second=0, microsecond=0)
+                cycle_key = f"expedition:{precise_expedition.isoformat(timespec='minutes')}"
+                existing = next((record for record in task_records if record["note"] == cycle_key), None)
+            else:
+                cycle_key = ""
+                existing = next((record for record in task_records if record["task_date"] == task_date), None)
+        elif task["recurrence"] == "weekly":
             cycle_key = weekly_cycle_key(parsed_task_date)
             existing = connection.execute(
                 "SELECT * FROM task_records WHERE task_id = ? AND note = ?",
@@ -2067,11 +2234,23 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
                 (task_id, task_date),
             ).fetchone()
 
+        if task["recurrence"] in {"interval", "monthly", "version"} and task_records:
+            if not completed and existing and task_records[0]["id"] != existing["id"]:
+                raise ValueError("请先撤销该任务较新的完成记录")
+            if completed and not existing and task_records[0]["task_date"] > task_date:
+                raise ValueError("不能在较新的完成记录之前补记周期任务")
+        if precise_expedition and not existing and task_records:
+            due = exact_due_moment(task["next_due"])
+            if due and precise_expedition < due:
+                if not used_at:
+                    return
+                raise ValueError("派遣尚未到期，请检查收取时间")
+
         if completed and not existing:
             previous_due = task["next_due"]
             precise_used_at = None
             if task["name"] in ("质变仪", "探索派遣") and task["recurrence"] == "interval":
-                precise_used_at = optional_local_datetime(used_at) or datetime.now().replace(
+                precise_used_at = precise_expedition or optional_local_datetime(used_at) or datetime.now().replace(
                     second=0, microsecond=0
                 )
             connection.execute(
@@ -2138,6 +2317,15 @@ def complete_all(task_date: str, task_ids: list[int]) -> None:
 
 class ExclusiveThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
+
+    def __init__(self, *args, **kwargs):
+        self.session_token = os.environ.get("LEYLINEBOOK_SESSION_TOKEN") or secrets.token_urlsafe(32)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", self.session_token):
+            raise ValueError("本地会话凭证格式无效")
+        self.update_health_file = None
+        self.ui_ready = False
+        self.ready_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -2208,6 +2396,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                     return
 
         if path.startswith("/api/"):
+            supplied = self.headers.get("X-LeyLineBook-Session", "")
+            challenge = self.headers.get("X-LeyLineBook-Challenge", "")
+            instance_probe = method == "GET" and path == "/api/instance" and re.fullmatch(r"[0-9a-f]{64}", challenge)
+            authenticated = bool(supplied) and secrets.compare_digest(supplied.encode("utf-8"), self.server.session_token.encode("utf-8"))
+            if not instance_probe and not authenticated:
+                self.send_error_json("本地会话已失效，请通过启动器重新打开程序", HTTPStatus.UNAUTHORIZED)
+                return
             try:
                 self.handle_api(method, path, query)
             except (ValueError, sqlite3.IntegrityError) as error:
@@ -2226,6 +2421,17 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.serve_static(path)
 
     def handle_api(self, method: str, path: str, query: dict) -> None:
+        if method == "GET" and path == "/api/instance":
+            challenge = self.headers.get("X-LeyLineBook-Challenge", "")
+            self.send_json({"application": "LeyLineBook", "protocol": 1, "proof": instance_proof(self.server.session_token, challenge)})
+            return
+        if method == "POST" and path == "/api/ready":
+            with self.server.ready_lock:
+                if not self.server.ui_ready:
+                    _write_update_health_file(self.server.update_health_file)
+                    self.server.ui_ready = True
+            self.send_json(None)
+            return
         if method == "GET" and path == "/api/heartbeat":
             global _last_heartbeat
             _last_heartbeat = time.time()
@@ -2516,13 +2722,16 @@ def run_server(port: int, mode: str, update_health_file: str | None = None) -> N
     initialize_database()
     server, port = create_http_server(port)
     url = f"http://127.0.0.1:{port}"
+    server.update_health_file = update_health_file
+    launch_url = f"{url}/#session={server.session_token}"
+    if os.name == "nt":
+        _instance_file(port).write_text(dpapi_protect(server.session_token), encoding="ascii")
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    _write_update_health_file(update_health_file)
     print(f"LeyLineBook / 地脉簿已启动：{url}（模式：{mode}）")
     sys.stdout.flush()
 
     if mode == "window":
-        if launch_window(url):
+        if launch_window(launch_url):
             print("窗口已关闭，程序退出。", flush=True)
             server.shutdown()
             server.server_close()
@@ -2533,7 +2742,7 @@ def run_server(port: int, mode: str, update_health_file: str | None = None) -> N
     _last_heartbeat = time.time()
     threading.Thread(target=heartbeat_watchdog, daemon=True).start()
     if mode == "browser":
-        threading.Timer(0.7, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.7, lambda: webbrowser.open(launch_url)).start()
     try:
         while True:
             time.sleep(3600)
@@ -2543,22 +2752,44 @@ def run_server(port: int, mode: str, update_health_file: str | None = None) -> N
         server.server_close()
 
 
+def _instance_file(port: int) -> Path:
+    return Path(tempfile.gettempdir()) / f"LeyLineBook-session-{int(port)}.txt"
+
+
+def _instance_token(port: int) -> str:
+    token = dpapi_unprotect(_instance_file(port).read_text(encoding="ascii"))
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+        raise ValueError("本地实例凭证无效")
+    return token
+
+
+def instance_proof(token: str, challenge: str) -> str:
+    return hmac.new(token.encode("ascii"), f"LeyLineBook:1:{challenge}".encode("ascii"), hashlib.sha256).hexdigest()
+
+
 def is_already_running(port: int) -> bool:
-    import urllib.request
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/state", timeout=1)
-        return True
+        token = _instance_token(port)
+        challenge = secrets.token_hex(32)
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/instance",
+            headers={"X-LeyLineBook-Challenge": challenge},
+        )
+        with urllib.request.urlopen(request, timeout=1) as response:
+            data = json.load(response)
+        expected = {"application": "LeyLineBook", "protocol": 1, "proof": instance_proof(token, challenge)}
+        return data.get("success") is True and data.get("data") == expected
     except Exception:
         return False
 
 
 def stop_running_server(port: int) -> None:
-    import urllib.request
-
+    if not is_already_running(port):
+        raise ValueError("无法确认旧实例身份，未发送关闭请求")
     request = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/shutdown",
         data=b"{}",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-LeyLineBook-Session": _instance_token(port)},
         method="POST",
     )
     urllib.request.urlopen(request, timeout=2).read()

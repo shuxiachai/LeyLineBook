@@ -1,11 +1,13 @@
 {
   "name": "leylinebook-dev-tools",
   "private": true,
-  "description": "开发期工具依赖，仅用于验证 static/local-backend.js（移动端 PWA 业务逻辑）的单元测试；桌面端与移动端运行时均不依赖任何 npm 包。",
+  "description": "开发期 PWA 单元测试与桌面/手机浏览器回归工具；应用运行时不依赖 npm 包。",
   "scripts": {
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:browser": "node --test tests/browser.e2e.js"
   },
   "devDependencies": {
-    "fake-indexeddb": "^6.2.5"
+    "fake-indexeddb": "^6.2.5",
+    "playwright": "^1.63.0"
   }
 }

@@ -18,8 +18,8 @@
   const STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks", "app_meta", "backup_snapshots"];
   const IMPORT_STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks"];
   const BACKUP_FORMAT = "leylinebook-backup";
-  const BACKUP_SCHEMA_VERSION = 2;
-  const APP_VERSION = "3.0.4";
+  const BACKUP_SCHEMA_VERSION = 3;
+  const APP_VERSION = "3.0.5";
   const SNAPSHOT_LIMIT = 5;
 
   const OFFICIAL_VERSION_ANCHOR = "2026-05-20";
@@ -120,6 +120,8 @@
 
   /* ---------- IndexedDB 封装 ---------- */
   let _db = null;
+  let activeTransaction = null;
+  let operationQueue = Promise.resolve();
   function openDB() {
     return new Promise((resolve, reject) => {
       if (_db) return resolve(_db);
@@ -145,11 +147,47 @@
           };
         }
       };
-      req.onsuccess = () => { _db = req.result; resolve(_db); };
+      req.onsuccess = () => {
+        _db = req.result;
+        _db.onversionchange = () => { _db.close(); _db = null; };
+        resolve(_db);
+      };
       req.onerror = () => reject(req.error);
     });
   }
-  function tx(store, mode) { return _db.transaction(store, mode).objectStore(store); }
+  // One public operation owns its reads, validation and writes. IndexedDB also
+  // serializes overlapping readwrite scopes from other tabs.
+  function withTransaction(mode, operation) {
+    const run = async () => {
+      await openDB();
+      return new Promise((resolve, reject) => {
+        const transaction = _db.transaction(STORES, mode);
+        activeTransaction = transaction;
+        let result, failure, finished = false;
+        transaction.oncomplete = () => {
+          activeTransaction = null;
+          if (finished) resolve(result);
+          else reject(new Error("本地事务提前结束，请重试"));
+        };
+        transaction.onerror = (event) => { failure = failure || event.target.error || transaction.error; };
+        transaction.onabort = () => {
+          activeTransaction = null;
+          reject(failure || transaction.error || new Error("本地数据写入失败"));
+        };
+        Promise.resolve().then(operation).then((value) => { result = value; finished = true; }, (error) => {
+          failure = error;
+          try { transaction.abort(); } catch { reject(error); }
+        });
+      });
+    };
+    const result = operationQueue.then(run, run);
+    operationQueue = result.catch(() => {});
+    return result;
+  }
+  function tx(store) {
+    if (!activeTransaction) throw new Error("本地操作缺少事务");
+    return activeTransaction.objectStore(store);
+  }
   const reqP = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
   const getAll = (store) => reqP(tx(store, "readonly").getAll());
   const getOne = (store, id) => reqP(tx(store, "readonly").get(id));
@@ -157,19 +195,9 @@
   const delRec = (store, id) => reqP(tx(store, "readwrite").delete(id));
 
   function runAtomic(storeNames, queueRequests) {
-    return new Promise((resolve, reject) => {
-      const transaction = _db.transaction(storeNames, "readwrite");
-      let failure = null;
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = (event) => { failure = failure || event.target.error || transaction.error; };
-      transaction.onabort = () => reject(failure || transaction.error || new Error("本地数据写入失败"));
-      try {
-        queueRequests(transaction);
-      } catch (error) {
-        failure = error;
-        transaction.abort();
-      }
-    });
+    if (!activeTransaction || activeTransaction.mode !== "readwrite") throw new Error("本地操作缺少写事务");
+    queueRequests(activeTransaction);
+    return Promise.resolve();
   }
 
   function applyBatch({ puts = {}, deletes = {}, clears = [] }) {
@@ -207,7 +235,7 @@
 
   async function getVersionAnchor() {
     let a = await metaGet("version_anchor_date", null);
-    if (!a) { a = OFFICIAL_VERSION_ANCHOR; await metaSet("version_anchor_date", a); }
+    if (!a) a = OFFICIAL_VERSION_ANCHOR;
     return a;
   }
   async function getScheduleSettings() {
@@ -248,9 +276,7 @@
     const selectedGameDayEnd = gameDayEnd(selectedDate);
     const selectedWeekKey = weeklyCycleKey(selectedDate);
 
-    const recByTaskDateNote = new Map();
-    for (const r of records) recByTaskDateNote.set(`${r.task_id}|${r.task_date}|${r.note || ""}`, r);
-    const completedThisDate = (taskId) => recByTaskDateNote.has(`${taskId}|${selectedDate}|`);
+    const completedThisDate = (taskId) => records.some((r) => r.task_id === taskId && r.task_date === selectedDate && (!(r.note || "") || r.note.startsWith("expedition:")));
     const everCompleted = new Set(records.map((r) => r.task_id));
 
     const completedWeekly = new Set();
@@ -305,6 +331,7 @@
         const isDue = task.next_due && (preciseDue
           ? (isCurrentGameDay ? preciseDue <= now : preciseDue < selectedGameDayEnd)
           : task.next_due <= selectedDate);
+        if (task.name === "探索派遣" && isCurrentGameDay && isDue) task.completed = false;
         if (preciseDue) {
           task.available_at = `${isoDate(preciseDue)}T${pad(preciseDue.getHours())}:${pad(preciseDue.getMinutes())}`;
           task.cooldown_remaining_seconds = Math.max(0, Math.floor((preciseDue.getTime() - nowMs) / 1000));
@@ -371,17 +398,35 @@
     parseDate(taskDate);
     if (!taskRow || !taskRow.active || taskRow.deleted) throw new Error("没有找到该任务");
     const task = { ...taskRow };
-    const cycleKey = task.recurrence === "weekly" ? weeklyCycleKey(taskDate) : "";
-    const match = task.recurrence === "weekly"
+    const isExpedition = task.name === "探索派遣" && task.recurrence === "interval";
+    const used = isExpedition && completed ? (optionalLocalDateTime(usedAt) || optionalLocalDateTime(nowText())) : null;
+    let cycleKey = task.recurrence === "weekly" ? weeklyCycleKey(taskDate) : "";
+    if (used) cycleKey = `expedition:${isoDate(used)}T${pad(used.getHours())}:${pad(used.getMinutes())}`;
+    const taskRecords = records.filter((r) => r.task_id === task.id).sort((a, b) => b.task_date.localeCompare(a.task_date) || b.completed_at.localeCompare(a.completed_at));
+    const match = isExpedition
+      ? taskRecords.find((r) => completed ? r.note === cycleKey : r.task_date === taskDate)
+      : task.recurrence === "weekly"
       ? records.find((r) => r.task_id === task.id && r.note === cycleKey)
       : records.find((r) => r.task_id === task.id && r.task_date === taskDate && (r.note || "") === "");
     const mutation = { task: null, record: null, deleteRecordId: null };
+
+    if (["interval", "monthly", "version"].includes(task.recurrence)) {
+      if (!completed && match && taskRecords[0]?.id !== match.id) throw new Error("请先撤销该任务较新的完成记录");
+      if (completed && !match && taskRecords[0]?.task_date > taskDate) throw new Error("不能在较新的完成记录之前补记周期任务");
+    }
+    if (used && !match && taskRecords.length) {
+      const due = exactDueMoment(task.next_due);
+      if (due && used < due) {
+        if (!usedAt) return mutation;
+        throw new Error("派遣尚未到期，请检查收取时间");
+      }
+    }
 
     if (completed && !match) {
       const previousDue = task.next_due;
       let preciseUsed = null;
       if ((task.name === "质变仪" || task.name === "探索派遣") && task.recurrence === "interval") {
-        preciseUsed = optionalLocalDateTime(usedAt) || (() => { const d = new Date(); d.setSeconds(0, 0); return d; })();
+        preciseUsed = used || optionalLocalDateTime(usedAt) || (() => { const d = new Date(); d.setSeconds(0, 0); return d; })();
       }
       const completedAt = preciseUsed ? `${isoDate(preciseUsed)}T${pad(preciseUsed.getHours())}:${pad(preciseUsed.getMinutes())}:00` : nowText();
       mutation.record = { id: uuid(), task_id: task.id, task_date: taskDate, completed_at: completedAt, previous_next_due: previousDue, note: cycleKey, deleted: 0, created_at: nowText() };
@@ -478,8 +523,8 @@
     const dailyTask = String(p.dailyTask || "").trim();
     if (dailyTask) newTasks.push({ id: uuid(), account_id: acc.id, name: dailyTask.slice(0, 100), recurrence: "daily", interval_days: null, monthly_day: null, next_due: null, notes: "", active: 1, deleted: 0, sort_order: 0, custom_tag_id: null, created_at: nowText() });
     for (const taskName of planTasks) {
-      if (TASK_PRESETS[taskName]) newTasks.push(await buildPresetTask(acc.id, taskName));
-      else if (VALID_DURATIONS[taskName]) {
+      if (Object.hasOwn(TASK_PRESETS, taskName)) newTasks.push(await buildPresetTask(acc.id, taskName));
+      else if (Object.hasOwn(VALID_DURATIONS, taskName)) {
         for (const tag of allTags.filter((item) => item.category === taskName)) {
           newTasks.push({ id: uuid(), account_id: acc.id, name: tag.name, recurrence: "once", interval_days: null, monthly_day: null, next_due: tag.start_date || gameToday(), notes: "", active: 1, deleted: 0, sort_order: ACTIVITY_TASK_SORT_ORDER, custom_tag_id: tag.id, created_at: nowText() });
         }
@@ -520,7 +565,7 @@
 
   /* ---------- 号主任务标签 / 备注 ---------- */
   async function setAccountTaskTag(accountId, p) {
-    const taskName = String(p.tag || "").trim(); if (!TASK_PRESETS[taskName]) throw new Error("任务标签无效");
+    const taskName = String(p.tag || "").trim(); if (!Object.hasOwn(TASK_PRESETS, taskName)) throw new Error("任务标签无效");
     const account = await getOne("accounts", accountId);
     if (!account || !account.active || account.deleted) throw new Error("没有找到该号主");
     const enabled = !!p.enabled;
@@ -545,7 +590,7 @@
     if (name.length > 100) throw new Error("活动名称不能超过 100 个字符");
     if (RESERVED_ACTIVITY_NAMES.has(name)) throw new Error("活动名称不能与内置任务重名");
     ensureUniqueName(await getAll("custom_task_tags"), name, null, true);
-    const category = String(p.category || "").trim(); if (!VALID_DURATIONS[category]) throw new Error("活动类型无效");
+    const category = String(p.category || "").trim(); if (!Object.hasOwn(VALID_DURATIONS, category)) throw new Error("活动类型无效");
     const duration = Number(p.durationDays || 0); if (!Number.isInteger(duration) || duration < 1 || duration > 365) throw new Error("活动时长无效，应为 1 到 365 天");
     const raw = String(p.startDate || "").trim(); const start = raw || gameToday();
     try { parseDate(start); } catch { throw new Error("开始日期格式无效"); }
@@ -598,7 +643,7 @@
   /* ---------- 托管方案 ---------- */
   function parsePlanTasks(p) {
     const raw = p.tasks; if (!Array.isArray(raw) || !raw.length) throw new Error("方案至少需要勾选一个任务");
-    const tasks = []; for (const v of raw) { const n = String(v).trim(); if (!TASK_PRESETS[n] && !VALID_DURATIONS[n]) throw new Error(`方案中包含无效任务：${n}`); if (!tasks.includes(n)) tasks.push(n); }
+    const tasks = []; for (const v of raw) { const n = String(v).trim(); if (!Object.hasOwn(TASK_PRESETS, n) && !Object.hasOwn(VALID_DURATIONS, n)) throw new Error(`方案中包含无效任务：${n}`); if (!tasks.includes(n)) tasks.push(n); }
     return JSON.stringify(tasks);
   }
   async function createCarePlan(p) { const name = String(p.name || "").trim(); if (!name) throw new Error("请填写方案名称"); if (name.length > 20) throw new Error("方案名称不能超过 20 个字符"); ensureUniqueName(await getAll("care_plans"), name, null, true); const plan = await putRec("care_plans", { id: uuid(), name, tasks: parsePlanTasks(p), deleted: 0, created_at: nowText() }); return { ...plan, tasks: JSON.parse(plan.tasks) }; }
@@ -626,7 +671,7 @@
       .sort((a, b) => (Number(!!a.completed_at) - Number(!!b.completed_at)) || String(a.created_at).localeCompare(String(b.created_at)));
   }
   async function createStoryTask(p) {
-    const taskType = String(p.taskType || "").trim(); if (!STORY_TASK_TYPES[taskType]) throw new Error("请选择剧情任务类型");
+    const taskType = String(p.taskType || "").trim(); if (!Object.hasOwn(STORY_TASK_TYPES, taskType)) throw new Error("请选择剧情任务类型");
     const name = String(p.name || "").trim().slice(0, 100) || STORY_TASK_TYPES[taskType];
     const ownerName = String(p.ownerName || "").trim().slice(0, 100);
     let accountId = p.accountId || null; if (ownerName) accountId = null;
@@ -666,6 +711,7 @@
         tasks: await getAll("tasks"), records: await getAll("task_records"),
         storyTasks: await getAll("story_tasks"), customTags: await getAll("custom_task_tags"),
         carePlans: await getAll("care_plans"), groupNotes: [],
+        settings: { versionAnchorDate: await getVersionAnchor() },
       },
     };
   }
@@ -678,7 +724,7 @@
     if (payload.format !== BACKUP_FORMAT) {
       throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
-    if (payload.schemaVersion !== BACKUP_SCHEMA_VERSION) {
+    if (![2, BACKUP_SCHEMA_VERSION].includes(payload.schemaVersion)) {
       throw new Error(`不支持的备份版本：${String(payload.schemaVersion ?? "未知")}`);
     }
     if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
@@ -726,13 +772,33 @@
   }
 
   function importedRecurrence(value) {
-    const recurrence = String(value || "daily");
+    const recurrence = value === undefined ? "daily" : value;
     if (recurrence === "manual") return "once";
     if (!TASK_RECURRENCES.has(recurrence)) throw new Error("备份中的任务类型无效");
     return recurrence;
   }
 
   function validateBackupSource(source) {
+    for (const [collection, rows] of Object.entries(source)) {
+      const names = new Set();
+      for (const row of rows) {
+        for (const [field, limit] of [["name", 100], ["owner", 100], ["owner_name", 100], ["notes", 2000], ["note", 2000]]) {
+          if (field in row && (typeof row[field] !== "string" || row[field].length > limit)) throw new Error(`备份中的 ${field} 字段无效`);
+        }
+        if (["accounts", "tasks", "story_tasks", "custom_task_tags", "care_plans"].includes(collection) && !String(row.name || "").trim()) throw new Error("备份中的名称不能为空");
+        if (["accounts", "custom_task_tags", "care_plans"].includes(collection) && (collection === "accounts" || !row.deleted)) {
+          const name = canonicalName(row.name);
+          if (names.has(name)) throw new Error("备份中的名称重复");
+          names.add(name);
+        }
+        for (const field of ["active", "deleted", "has_bonus"]) {
+          if (field in row && ![0, 1, false, true].includes(row[field])) throw new Error(`备份中的 ${field} 状态无效`);
+        }
+        if ("sort_order" in row && (!Number.isInteger(row.sort_order) || row.sort_order < 0 || row.sort_order > 2147483647)) throw new Error("备份中的排序值无效");
+        for (const field of ["proxy_until", "start_date", "task_date"]) if (row[field] != null && row[field] !== "") parseDate(row[field]);
+        for (const field of ["next_due", "previous_next_due", "completed_at", "bonus_deadline", "created_at"]) validateImportedMoment(row[field]);
+      }
+    }
     for (const account of source.accounts) {
       if (!String(account.name || "").trim()) throw new Error("备份中的号主名称不能为空");
       if (account.proxy_until) {
@@ -742,8 +808,8 @@
     for (const tag of source.custom_task_tags) {
       if (tag.deleted) continue;
       if (!String(tag.name || "").trim()) throw new Error("备份中的活动名称不能为空");
-      if (!VALID_DURATIONS[tag.category || "大活动"]) throw new Error("备份中的活动类型无效");
-      const duration = Number(tag.duration_days ?? 16);
+      if (!Object.hasOwn(VALID_DURATIONS, tag.category === undefined ? "大活动" : tag.category)) throw new Error("备份中的活动类型无效");
+      const duration = tag.duration_days === undefined ? 16 : tag.duration_days;
       if (!Number.isInteger(duration) || duration < 1 || duration > 365) throw new Error("备份中的活动时长无效");
       if (tag.start_date) {
         try { parseDate(tag.start_date); } catch { throw new Error("备份中的活动开始日期无效"); }
@@ -752,6 +818,8 @@
     for (const task of source.tasks) {
       if (!String(task.name || "").trim()) throw new Error("备份中的任务名称不能为空");
       const recurrence = importedRecurrence(task.recurrence);
+      const precise = recurrence === "interval" && ["探索派遣", "质变仪"].includes(task.name);
+      if (task.next_due && !precise) parseDate(task.next_due);
       if (task.next_due) {
         const due = String(task.next_due);
         if (due.includes("T")) {
@@ -761,21 +829,39 @@
         }
       }
       if (recurrence === "monthly") {
-        const monthlyDay = Number(task.monthly_day);
+        const monthlyDay = task.monthly_day;
         if (!Number.isInteger(monthlyDay) || monthlyDay < 1 || monthlyDay > 28) throw new Error("备份中的每月任务配置无效");
       }
       if (recurrence === "interval" && task.name !== "探索派遣") {
-        const intervalDays = Number(task.interval_days);
+        const intervalDays = task.interval_days;
         if (!Number.isInteger(intervalDays) || intervalDays < 1 || intervalDays > 365) throw new Error("备份中的周期任务配置无效");
       }
     }
+    const recordKeys = new Set();
+    const tasksById = new Map(source.tasks.map((task) => [String(task.id), task]));
     for (const record of source.task_records) {
       try { parseDate(record.task_date); } catch { throw new Error("备份中的完成记录日期无效"); }
+      const key = JSON.stringify([String(record.task_id), record.task_date, record.note || ""]);
+      if (recordKeys.has(key)) throw new Error("备份中的完成记录重复");
+      recordKeys.add(key);
+      const task = tasksById.get(String(record.task_id));
+      const precise = task?.recurrence === "interval" && ["探索派遣", "质变仪"].includes(task.name);
+      if (record.previous_next_due && !precise) parseDate(record.previous_next_due);
     }
     for (const story of source.story_tasks) {
-      if (!STORY_TASK_TYPES[story.task_type || "world"]) throw new Error("备份中的剧情任务类型无效");
+      if (!Object.hasOwn(STORY_TASK_TYPES, story.task_type === undefined ? "world" : story.task_type)) throw new Error("备份中的剧情任务类型无效");
       if (!String(story.name || "").trim()) throw new Error("备份中的剧情任务名称不能为空");
     }
+  }
+
+  function validateImportedMoment(value) {
+    if (value == null || value === "") return;
+    if (typeof value !== "string") throw new Error("备份中的日期格式无效");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) { parseDate(value); return; }
+    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?$/.exec(value);
+    if (!match) throw new Error("备份中的日期格式无效");
+    parseDate(match[1]);
+    if (Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4] || 0) > 59) throw new Error("备份中的日期格式无效");
   }
 
   function prepareBackupImport(payload) {
@@ -783,6 +869,8 @@
     if (!Array.isArray(data.accounts)) {
       throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
+    if (data.settings !== undefined && (!data.settings || typeof data.settings !== "object" || Array.isArray(data.settings))) throw new Error("备份中的设置格式无效");
+    if (data.settings && "versionAnchorDate" in data.settings) parseDate(data.settings.versionAnchorDate);
 
     const source = {
       accounts: getImportRows(data, "accounts"),
@@ -800,8 +888,11 @@
     const planIds = createImportIdMap(source.care_plans, "托管方案");
     const storyIds = createImportIdMap(source.story_tasks, "剧情任务");
     const importedAt = nowText();
+    const anchor = data.settings?.versionAnchorDate || OFFICIAL_VERSION_ANCHOR;
+    parseDate(anchor);
 
     return {
+      app_meta: [{ key: "version_anchor_date", value: anchor }],
       accounts: source.accounts.map((account) => ({
         id: accountIds.get(String(account.id)),
         name: account.name || "",
@@ -877,26 +968,7 @@
   }
 
   function replaceImportedData(rowsByStore) {
-    const transaction = _db.transaction(IMPORT_STORES, "readwrite");
-    let failure = null;
-
-    return new Promise((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = (event) => { failure = failure || event.target.error || transaction.error; };
-      transaction.onabort = () => reject(failure || transaction.error || new Error("导入失败，原数据已保留"));
-
-      try {
-        // Queue every request synchronously so the browser cannot auto-commit between stores.
-        for (const storeName of IMPORT_STORES) {
-          const store = transaction.objectStore(storeName);
-          store.clear();
-          for (const row of rowsByStore[storeName]) store.put(row);
-        }
-      } catch (error) {
-        failure = error;
-        transaction.abort();
-      }
-    });
+    return applyBatch({ puts: rowsByStore, clears: IMPORT_STORES });
   }
 
   async function importBackup(payload) {
@@ -1011,7 +1083,12 @@
   }
 
   async function handle(path, options = {}) {
-    await openDB();
+    const method = (options.method || "GET").toUpperCase();
+    const mode = method === "GET" && !path.startsWith("/api/state") ? "readonly" : "readwrite";
+    return withTransaction(mode, () => dispatch(path, options));
+  }
+
+  async function dispatch(path, options) {
     const method = (options.method || "GET").toUpperCase();
     const [rawPath, rawQuery] = path.split("?");
     const query = {}; if (rawQuery) for (const kv of rawQuery.split("&")) { const [k, v] = kv.split("="); query[decodeURIComponent(k)] = decodeURIComponent(v || ""); }
@@ -1032,7 +1109,12 @@
   if (!isServerMode) {
     window.LOCAL_BACKEND = {
       handle,
-      _debug: { loadState, buildBackup, importBackup, weeklyCycleStart, versionWindow },
+      _debug: {
+        loadState: (day) => withTransaction("readonly", () => loadState(day)),
+        buildBackup: () => withTransaction("readonly", buildBackup),
+        importBackup: (payload) => withTransaction("readwrite", () => importBackup(payload)),
+        weeklyCycleStart, versionWindow,
+      },
     };
     document.documentElement.classList.add("pwa-mode");
   }

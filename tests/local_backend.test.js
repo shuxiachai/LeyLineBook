@@ -8,6 +8,13 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const fs = require("node:fs");
+const vm = require("node:vm");
+const RealDate = Date;
+const frozenNow = new RealDate("2026-09-10T12:00:00+10:00").getTime();
+global.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : [frozenNow])); }
+  static now() { return frozenNow; }
+};
 
 require("fake-indexeddb/auto");
 
@@ -94,20 +101,140 @@ function addDaysStr(s, n) {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
-test("PWA v1 升级会清除历史明文凭据并关闭凭据接口", async () => {
+test("PWA v1 upgrade removes legacy credentials", async () => {
   await seedLegacyCredentials();
   const backup = await api("/api/export", "GET");
   const account = await readRawAccount("legacy-account");
-
   assert.equal(backup.format, "leylinebook-backup");
-  assert.equal(backup.schemaVersion, 2);
-  assert.equal(backup.appVersion, DESKTOP_VERSION, "桌面端与 PWA 版本号应保持一致");
-  assert.equal(Object.hasOwn(account, "credentials"), false, "升级后不应残留 credentials 字段");
-  await assert.rejects(
-    api("/api/accounts/legacy-account/credentials", "GET"),
-    /手机版不保存账号凭据/
-  );
+  assert.equal(backup.schemaVersion, 3);
+  assert.equal(backup.appVersion, DESKTOP_VERSION);
+  assert.equal(Object.hasOwn(account, "credentials"), false);
+  await assert.rejects(api("/api/accounts/legacy-account/credentials", "GET"), /手机版不保存账号凭据/);
   await api("/api/reset", "POST", {});
+});
+
+function secondTab() {
+  const context = { window: {}, location: global.location, document: global.document, indexedDB, IDBKeyRange, crypto: global.crypto, Date };
+  vm.runInNewContext(SOURCE, context);
+  return (path, method, body) => context.window.LOCAL_BACKEND.handle(path, { method, body: JSON.stringify(body) });
+}
+
+test("PWA concurrent tabs serialize read-check-write and commit before success", async () => {
+  await api("/api/reset", "POST", {});
+  const other = secondTab();
+  const attempts = await Promise.allSettled([
+    api("/api/accounts", "POST", { name: "Concurrent", dailyTask: "Daily" }),
+    other("/api/accounts", "POST", { name: "Concurrent", dailyTask: "Daily" }),
+  ]);
+  assert.equal(attempts.filter((result) => result.status === "fulfilled").length, 1);
+  const backup = await api("/api/export", "GET");
+  const task = backup.data.tasks[0];
+  await Promise.all([
+    api(`/api/tasks/${task.id}/toggle`, "POST", { date: gameToday(), completed: true }),
+    other(`/api/tasks/${task.id}/toggle`, "POST", { date: gameToday(), completed: true }),
+  ]);
+  assert.equal((await api("/api/export", "GET")).data.records.length, 1);
+  await api("/api/reset", "POST", {});
+});
+
+test("PWA request success followed by transaction abort rejects the API", async () => {
+  await api("/api/reset", "POST", {});
+  const original = IDBObjectStore.prototype.put;
+  let requestSucceeded = false;
+  IDBObjectStore.prototype.put = function (...args) {
+    const request = original.apply(this, args);
+    if (this.name === "care_plans") {
+      const transaction = this.transaction;
+      request.addEventListener("success", () => { requestSucceeded = true; transaction.abort(); });
+    }
+    return request;
+  };
+  try { await assert.rejects(api("/api/care-plans", "POST", { name: "Abort", tasks: ["体力"] }), /abort|写入失败/i); }
+  finally { IDBObjectStore.prototype.put = original; }
+  assert.equal(requestSucceeded, true);
+  assert.equal((await api("/api/export", "GET")).data.carePlans.length, 0);
+});
+
+test("PWA enum validation rejects inherited object properties", async () => {
+  await api("/api/reset", "POST", {});
+  for (const value of ["__proto__", "constructor", "toString"]) {
+    await assert.rejects(api("/api/care-plans", "POST", { name: "Invalid", tasks: [value] }));
+    await assert.rejects(api("/api/custom-tags", "POST", { name: "Invalid", category: value, durationDays: 10 }));
+    await assert.rejects(api("/api/story-tasks", "POST", { name: "Invalid", ownerName: "Owner", taskType: value }));
+  }
+  const data = (await api("/api/export", "GET")).data;
+  assert.equal(data.carePlans.length + data.customTags.length + data.storyTasks.length, 0);
+});
+
+test("PWA backup validation shares the desktop contract and preserves settings", async () => {
+  const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/backup_cases.json"), "utf8"));
+  await api("/api/import", "POST", fixtures.valid);
+  const before = (await api("/api/export", "GET")).data;
+  for (const example of fixtures.invalid) {
+    const payload = structuredClone(fixtures.valid);
+    const row = example.collection === "settings" ? payload.settings : payload[example.collection][0];
+    row[example.field] = example.value;
+    await assert.rejects(api("/api/import", "POST", payload), `should reject ${JSON.stringify(example)}`);
+    assert.deepEqual((await api("/api/export", "GET")).data, before);
+  }
+  const backup = await api("/api/export", "GET");
+  await api("/api/reset", "POST", {});
+  await api("/api/import", "POST", backup);
+  assert.equal((await api("/api/settings", "GET")).versionAnchorDate, "2026-06-03");
+  backup.schemaVersion = 2;
+  delete backup.data.settings;
+  await api("/api/import", "POST", backup);
+  assert.equal((await api("/api/settings", "GET")).versionAnchorDate, "2026-05-20");
+  await api("/api/reset", "POST", {});
+});
+
+test("PWA historical undo and multiple expeditions preserve newer schedules", async () => {
+  await api("/api/reset", "POST", {});
+  const account = await api("/api/accounts", "POST", { name: "Cycles" });
+  await api(`/api/accounts/${account.id}/task-tags`, "POST", { tag: "壶", enabled: true });
+  const pot = (await api("/api/export", "GET")).data.tasks[0];
+  await api(`/api/tasks/${pot.id}/toggle`, "POST", { date: "2026-06-01", completed: true });
+  await api(`/api/tasks/${pot.id}/toggle`, "POST", { date: "2026-06-04", completed: true });
+  const before = (await api("/api/export", "GET")).data.tasks[0].next_due;
+  await assert.rejects(api(`/api/tasks/${pot.id}/toggle`, "POST", { date: "2026-06-01", completed: false }), /较新/);
+  assert.equal((await api("/api/export", "GET")).data.tasks[0].next_due, before);
+  await api(`/api/accounts/${account.id}/task-tags`, "POST", { tag: "探索派遣", enabled: true, notes: ["派遣:15小时"] });
+  const expedition = (await api("/api/export", "GET")).data.tasks.find((task) => task.name === "探索派遣");
+  for (const usedAt of ["2026-06-14T04:10", "2026-06-14T04:10", "2026-06-14T19:20"]) {
+    await api(`/api/tasks/${expedition.id}/toggle`, "POST", { date: "2026-06-14", completed: true, usedAt });
+  }
+  const data = (await api("/api/export", "GET")).data;
+  assert.equal(data.records.filter((record) => record.task_id === expedition.id).length, 2);
+  assert.equal(data.tasks.find((task) => task.id === expedition.id).next_due, "2026-06-15T10:20");
+  await api("/api/reset", "POST", {});
+});
+
+test("PWA concurrent exports always contain a consistent relational snapshot", async () => {
+  await api("/api/reset", "POST", {});
+  const other = secondTab();
+  for (let index = 0; index < 5; index++) {
+    const [, backup] = await Promise.all([
+      other("/api/accounts", "POST", { name: `Snapshot ${index}`, dailyTask: "Daily" }),
+      api("/api/export", "GET"),
+    ]);
+    const ids = new Set(backup.data.accounts.map((account) => account.id));
+    assert.ok(backup.data.tasks.every((task) => ids.has(task.account_id)));
+  }
+  await api("/api/reset", "POST", {});
+});
+
+test("Service worker activation retains unrelated origin caches", async () => {
+  const scope = "https://example.test/LeyLineBook/";
+  const deleted = [];
+  const listeners = {};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../static/sw.js"), "utf8"), {
+    self: { registration: { scope }, addEventListener: (name, handler) => { listeners[name] = handler; }, clients: { claim() {} } },
+    caches: { keys: async () => ["another-project", "leylinebook-shell-v4", `leylinebook-shell:${scope}:v3`, `leylinebook-shell:${scope}:v5`, "leylinebook-shell:https://example.test/other/:v2"], delete: async (key) => { deleted.push(key); } },
+  });
+  let completed;
+  listeners.activate({ waitUntil(promise) { completed = promise; } });
+  await completed;
+  assert.deepEqual(deleted, ["leylinebook-shell-v4", `leylinebook-shell:${scope}:v3`]);
 });
 
 test("local-backend.js 业务逻辑", async (t) => {
@@ -247,7 +374,7 @@ test("local-backend.js 业务逻辑", async (t) => {
   await t.test("新版备份可往返导入，未知版本会被拒绝", async () => {
     const backup = await BE._debug.buildBackup();
     assert.equal(backup.format, "leylinebook-backup");
-    assert.equal(backup.schemaVersion, 2);
+    assert.equal(backup.schemaVersion, 3);
     assert.ok(Array.isArray(backup.data.accounts));
 
     await BE._debug.importBackup(backup);

@@ -777,7 +777,7 @@ class TaskRecorderTest(unittest.TestCase):
 
         backup = app.build_backup_payload()
         self.assertEqual(backup["format"], "leylinebook-backup")
-        self.assertEqual(backup["schemaVersion"], 2)
+        self.assertEqual(backup["schemaVersion"], 3)
         acc_before = len(backup["data"]["accounts"])
         rec_before = len(backup["data"]["records"])
         app.import_backup(backup)
@@ -1401,9 +1401,11 @@ class SecurityTest(unittest.TestCase):
 
         class _Srv:
             server_address = ("127.0.0.1", port)
+            session_token = "test-session"
 
         handler.server = _Srv()
         handler.send_error = lambda code, *a, **k: handler.sent_errors.append(code)
+        handler.send_error_json = lambda message, code: handler.sent_errors.append(code)
         handler.handle_api = lambda *a, **k: setattr(handler, "api_called", True)
         handler.serve_static = lambda p: handler.static_args.append(p)
         return handler
@@ -1432,7 +1434,7 @@ class SecurityTest(unittest.TestCase):
 
     def test_same_origin_write_is_allowed(self):
         handler = self._make_handler(
-            {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"},
+            {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765", "X-LeyLineBook-Session": "test-session"},
             path="/api/care-plans",
         )
         handler.read_json = lambda: {}

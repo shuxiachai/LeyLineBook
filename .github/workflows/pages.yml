@@ -5,7 +5,8 @@ on:
     branches: [main]
     paths:
       - "static/**"
-      - "tests/local_backend.test.js"
+      - "tests/**"
+      - "scripts/browser_test_server.py"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/pages.yml"
@@ -34,6 +35,11 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Set up Python for isolated browser tests
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
       - name: Test PWA
         run: |
           npm ci
@@ -41,6 +47,14 @@ jobs:
           node --check static/app.js
           node --check static/local-backend.js
           node --check static/sw.js
+
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run PWA browser regressions
+        env:
+          LEYLINEBOOK_PWA_ONLY: "1"
+        run: npm run test:browser
 
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v6
