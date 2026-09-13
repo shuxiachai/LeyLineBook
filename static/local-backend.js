@@ -18,8 +18,9 @@
   const STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks", "app_meta", "backup_snapshots"];
   const IMPORT_STORES = ["accounts", "tasks", "task_records", "custom_task_tags", "care_plans", "story_tasks"];
   const BACKUP_FORMAT = "leylinebook-backup";
-  const BACKUP_SCHEMA_VERSION = 3;
-  const APP_VERSION = "3.0.5";
+  const BACKUP_SCHEMA_VERSION = 4;
+  const TIME = globalThis.LEYLINE_TIME;
+  const APP_VERSION = "3.0.6";
   const SNAPSHOT_LIMIT = 5;
 
   const OFFICIAL_VERSION_ANCHOR = "2026-05-20";
@@ -103,16 +104,8 @@
   function optionalLocalDateTime(value, current = new Date()) {
     const text = String(value || "").trim();
     if (!text) return null;
-    const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(text);
-    if (!match) throw new Error("使用时间应为本地时间");
-    const day = parseDate(match[1]);
-    const hours = Number(match[2]);
-    const minutes = Number(match[3]);
-    const seconds = Number(match[4] || 0);
-    if (hours > 23 || minutes > 59 || seconds > 59) throw new Error("使用时间格式无效");
-    const parsed = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hours, minutes, seconds);
+    const parsed = TIME.minuteInstant(TIME.instant(text));
     if (parsed > new Date(current.getTime() + 5 * 60000)) throw new Error("使用时间不能晚于当前时间");
-    parsed.setSeconds(0, 0);
     return parsed;
   }
 
@@ -328,15 +321,17 @@
           const pd = parseDate(task.next_due); const potDue = new Date(pd.getFullYear(), pd.getMonth(), pd.getDate(), 4, 0);
           if (potDue.getTime() > nowMs) preciseDue = potDue;
         }
+        const preciseText = preciseDue ? (String(task.next_due).includes("T") ? task.next_due : TIME.localText(preciseDue)) : null;
         const isDue = task.next_due && (preciseDue
-          ? (isCurrentGameDay ? preciseDue <= now : preciseDue < selectedGameDayEnd)
+          ? (isCurrentGameDay ? TIME.remaining(preciseText, now) <= 0 : TIME.remaining(preciseText, selectedGameDayEnd) < 0)
           : task.next_due <= selectedDate);
         if (task.name === "探索派遣" && isCurrentGameDay && isDue) task.completed = false;
         if (preciseDue) {
-          task.available_at = `${isoDate(preciseDue)}T${pad(preciseDue.getHours())}:${pad(preciseDue.getMinutes())}`;
-          task.cooldown_remaining_seconds = Math.max(0, Math.floor((preciseDue.getTime() - nowMs) / 1000));
+          task.time_semantics = TIME.isInstant(preciseText) ? "absolute" : "legacy-local";
+          task.available_at = preciseText;
+          task.cooldown_remaining_seconds = Math.max(0, Math.floor(TIME.remaining(preciseText, now)));
         }
-        const stillCooling = isCurrentGameDay && preciseDue && preciseDue.getTime() > nowMs;
+        const stillCooling = isCurrentGameDay && preciseDue && TIME.remaining(preciseText, now) > 0;
         if (task.completed || isDue || stillCooling) dueTasks.push(task);
       } else if (rec === "monthly") {
         const show = (task.completed || (task.next_due && task.next_due <= selectedDate)) && (!completedMonthly.has(task.id) || task.completed);
@@ -357,14 +352,14 @@
       }
     }
 
-    const longCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= selectedGameDayEnd;
+    const longCooling = (t) => !t.completed && t.available_at && TIME.remaining(t.available_at, selectedGameDayEnd) >= 0;
     const countable = dueTasks.filter((t) => !longCooling(t));
     const completedCount = countable.filter((t) => t.completed).length;
     const DAILY_CATEGORY = new Set(["体力", "狗粮", "质变仪", "壶", "爱可菲料理", "探索派遣"]);
     const dailyTasks = countable.filter((t) => DAILY_CATEGORY.has(t.name));
 
     return {
-      date: selectedDate, accounts, tasks: allTasks, dueTasks,
+      date: selectedDate, timeContractVersion: TIME.VERSION, accounts, tasks: allTasks, dueTasks,
       accountNotes: [], customTags, carePlans, storyTasks: await listStoryTasks(), settings,
       summary: {
         total: countable.length, completed: completedCount, remaining: countable.length - completedCount,
@@ -378,7 +373,12 @@
     const preset = TASK_PRESETS[taskName];
     let nextDue = null;
     if (preset.recurrence === "interval") nextDue = gameToday();
-    else if (preset.recurrence === "monthly") nextDue = monthlyOccurrence(gameToday(), preset.monthly_day);
+    else if (preset.recurrence === "monthly") {
+      const today = gameToday();
+      const ref = parseDate(today);
+      if (ref.getDate() < preset.monthly_day) ref.setMonth(ref.getMonth() - 1, 1);
+      nextDue = monthlyOccurrence(isoDate(ref), preset.monthly_day);
+    }
     else if (preset.recurrence === "version") { const w = versionWindow(await getVersionAnchor()); nextDue = w ? w.eventStart : null; }
     return {
       id: uuid(), account_id: accountId, name: taskName, recurrence: preset.recurrence,
@@ -399,10 +399,13 @@
     if (!taskRow || !taskRow.active || taskRow.deleted) throw new Error("没有找到该任务");
     const task = { ...taskRow };
     const isExpedition = task.name === "探索派遣" && task.recurrence === "interval";
-    const used = isExpedition && completed ? (optionalLocalDateTime(usedAt) || optionalLocalDateTime(nowText())) : null;
+    const isPrecise = task.recurrence === "interval" && ["质变仪", "探索派遣"].includes(task.name);
+    const suppliedUsed = completed && isPrecise ? optionalLocalDateTime(usedAt) : null;
+    if (completed && isPrecise && !suppliedUsed && taskDate !== gameToday()) throw new Error("历史精确冷却任务请单独补记实际使用时间，不能批量使用当前时间");
+    const preciseUsed = completed && isPrecise ? (suppliedUsed || TIME.minuteInstant(new Date())) : null;
     let cycleKey = task.recurrence === "weekly" ? weeklyCycleKey(taskDate) : "";
-    if (used) cycleKey = `expedition:${isoDate(used)}T${pad(used.getHours())}:${pad(used.getMinutes())}`;
-    const taskRecords = records.filter((r) => r.task_id === task.id).sort((a, b) => b.task_date.localeCompare(a.task_date) || b.completed_at.localeCompare(a.completed_at));
+    if (isExpedition && preciseUsed) cycleKey = `expedition:${TIME.utcText(preciseUsed)}`;
+    const taskRecords = records.filter((r) => r.task_id === task.id).sort(isPrecise ? TIME.comparePreciseRecords : TIME.compareRecords);
     const match = isExpedition
       ? taskRecords.find((r) => completed ? r.note === cycleKey : r.task_date === taskDate)
       : task.recurrence === "weekly"
@@ -412,23 +415,22 @@
 
     if (["interval", "monthly", "version"].includes(task.recurrence)) {
       if (!completed && match && taskRecords[0]?.id !== match.id) throw new Error("请先撤销该任务较新的完成记录");
-      if (completed && !match && taskRecords[0]?.task_date > taskDate) throw new Error("不能在较新的完成记录之前补记周期任务");
+      if (completed && !match && taskRecords.length) {
+        const outOfOrder = isPrecise ? TIME.remaining(taskRecords[0].completed_at, preciseUsed) > 0 : taskRecords[0].task_date > taskDate;
+        if (outOfOrder) throw new Error("不能在较新的完成记录之前补记周期任务");
+      }
     }
-    if (used && !match && taskRecords.length) {
+    if (preciseUsed && !match && taskRecords.length) {
       const due = exactDueMoment(task.next_due);
-      if (due && used < due) {
-        if (!usedAt) return mutation;
-        throw new Error("派遣尚未到期，请检查收取时间");
+      if (due && TIME.remaining(task.next_due, preciseUsed) > 0) {
+        if (!suppliedUsed && isExpedition) return mutation;
+        throw new Error(isExpedition ? "派遣尚未到期，请检查收取时间" : "质变仪尚未到期，请检查使用时间");
       }
     }
 
     if (completed && !match) {
       const previousDue = task.next_due;
-      let preciseUsed = null;
-      if ((task.name === "质变仪" || task.name === "探索派遣") && task.recurrence === "interval") {
-        preciseUsed = used || optionalLocalDateTime(usedAt) || (() => { const d = new Date(); d.setSeconds(0, 0); return d; })();
-      }
-      const completedAt = preciseUsed ? `${isoDate(preciseUsed)}T${pad(preciseUsed.getHours())}:${pad(preciseUsed.getMinutes())}:00` : nowText();
+      const completedAt = preciseUsed ? TIME.utcText(preciseUsed) : nowText();
       mutation.record = { id: uuid(), task_id: task.id, task_date: taskDate, completed_at: completedAt, previous_next_due: previousDue, note: cycleKey, deleted: 0, created_at: nowText() };
 
       if (task.recurrence === "interval") {
@@ -436,9 +438,9 @@
         if (preciseUsed && task.name === "质变仪") {
           const intervalDays = Number(task.interval_days);
           if (!Number.isInteger(intervalDays) || intervalDays < 1) throw new Error("任务冷却天数未配置，请检查任务设置");
-          const n = new Date(preciseUsed.getTime() + 24 * intervalDays * 3600000); nextDue = `${isoDate(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`;
+          nextDue = TIME.utcText(new Date(preciseUsed.getTime() + 24 * intervalDays * 3600000));
         }
-        else if (preciseUsed && task.name === "探索派遣") { const n = new Date(preciseUsed.getTime() + expeditionHours(task.notes) * 3600000); nextDue = `${isoDate(n)}T${pad(n.getHours())}:${pad(n.getMinutes())}`; }
+        else if (preciseUsed && task.name === "探索派遣") nextDue = TIME.utcText(new Date(preciseUsed.getTime() + expeditionHours(task.notes) * 3600000));
         else {
           const intervalDays = Number(task.interval_days);
           if (!Number.isInteger(intervalDays) || intervalDays < 1) throw new Error("任务冷却天数未配置，请检查任务设置");
@@ -705,8 +707,10 @@
       format: BACKUP_FORMAT,
       schemaVersion: BACKUP_SCHEMA_VERSION,
       appVersion: APP_VERSION,
+      timeContractVersion: TIME.VERSION,
       exportedAt: nowText(),
       data: {
+        timeLegacyArchive: await metaGet("time_legacy_archive", []),
         accounts: (await getAll("accounts")).map((a) => { const c = { ...a }; delete c.credentials; return c; }),
         tasks: await getAll("tasks"), records: await getAll("task_records"),
         storyTasks: await getAll("story_tasks"), customTags: await getAll("custom_task_tags"),
@@ -724,9 +728,10 @@
     if (payload.format !== BACKUP_FORMAT) {
       throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
-    if (![2, BACKUP_SCHEMA_VERSION].includes(payload.schemaVersion)) {
+    if (![2, 3, BACKUP_SCHEMA_VERSION].includes(payload.schemaVersion)) {
       throw new Error(`不支持的备份版本：${String(payload.schemaVersion ?? "未知")}`);
     }
+    if (payload.schemaVersion === BACKUP_SCHEMA_VERSION && payload.timeContractVersion !== TIME.VERSION) throw new Error("不支持的备份时间契约版本");
     if (!payload.data || typeof payload.data !== "object" || Array.isArray(payload.data)) {
       throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
@@ -840,6 +845,7 @@
     const recordKeys = new Set();
     const tasksById = new Map(source.tasks.map((task) => [String(task.id), task]));
     for (const record of source.task_records) {
+      if (Object.hasOwn(record, "completed_at") && !record.completed_at) throw new Error("备份中的完成时间不能为空");
       try { parseDate(record.task_date); } catch { throw new Error("备份中的完成记录日期无效"); }
       const key = JSON.stringify([String(record.task_id), record.task_date, record.note || ""]);
       if (recordKeys.has(key)) throw new Error("备份中的完成记录重复");
@@ -857,6 +863,7 @@
   function validateImportedMoment(value) {
     if (value == null || value === "") return;
     if (typeof value !== "string") throw new Error("备份中的日期格式无效");
+    if (TIME.isInstant(value)) { TIME.instant(value); return; }
     if (/^\d{4}-\d{2}-\d{2}$/.test(value)) { parseDate(value); return; }
     const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,6})?)?$/.exec(value);
     if (!match) throw new Error("备份中的日期格式无效");
@@ -864,8 +871,10 @@
     if (Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4] || 0) > 59) throw new Error("备份中的日期格式无效");
   }
 
-  function prepareBackupImport(payload) {
-    const data = normalizeBackupPayload(payload);
+  function prepareBackupImport(payload, preserveLegacy = false) {
+    const original = normalizeBackupPayload(payload);
+    if (!Array.isArray(original.timeLegacyArchive || [])) throw new Error("旧时间确认记录格式无效");
+    const data = preserveLegacy ? original : TIME.resolveBackup(original, payload.timeResolution);
     if (!Array.isArray(data.accounts)) {
       throw new Error("备份文件格式无效，请选择由本程序导出的 JSON 文件");
     }
@@ -892,7 +901,7 @@
     parseDate(anchor);
 
     return {
-      app_meta: [{ key: "version_anchor_date", value: anchor }],
+      app_meta: [{ key: "version_anchor_date", value: anchor }, { key: "time_legacy_archive", value: data.timeLegacyArchive || [] }],
       accounts: source.accounts.map((account) => ({
         id: accountIds.get(String(account.id)),
         name: account.name || "",
@@ -971,8 +980,8 @@
     return applyBatch({ puts: rowsByStore, clears: IMPORT_STORES });
   }
 
-  async function importBackup(payload) {
-    const rowsByStore = prepareBackupImport(payload);
+  async function importBackup(payload, preserveLegacy = false) {
+    const rowsByStore = prepareBackupImport(payload, preserveLegacy);
     await saveImportSnapshot();
     await replaceImportedData(rowsByStore);
   }
@@ -1013,7 +1022,7 @@
   async function restoreImportSnapshot(id) {
     const snapshot = await getOne("backup_snapshots", id);
     if (!snapshot) throw new Error("没有找到该导入快照");
-    await importBackup(snapshot.backup);
+    await importBackup(snapshot.backup, true);
   }
   async function resetDatabase() {
     await runAtomic(STORES, (transaction) => {
@@ -1079,7 +1088,7 @@
       const t = tasks.get(r.task_id) || {}; const a = accById.get(t.account_id) || {};
       return { id: r.id, task_date: r.task_date, completed_at: r.completed_at, note: r.note, task_name: t.name, account_name: a.name, account_id: t.account_id };
     }).filter((row) => !accId || row.account_id === accId)
-      .sort((a, b) => b.task_date.localeCompare(a.task_date) || String(b.completed_at).localeCompare(String(a.completed_at)));
+      .sort(TIME.compareRecords);
   }
 
   async function handle(path, options = {}) {

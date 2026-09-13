@@ -793,6 +793,18 @@
   <div class="shutdown-screen hidden" id="shutdownScreen">
     <div><h1>程序已关闭</h1><p>数据已保存，可以直接关闭这个页面。</p></div>
   </div>
+  <dialog id="timeResolutionDialog">
+    <form id="timeResolutionForm">
+      <div class="dialog-head"><h2 id="timeResolutionTitle">确认时间</h2><button type="button" class="icon-button" data-close-dialog="timeResolutionDialog" aria-label="关闭">×</button></div>
+      <p>确认来源时区；重复小时需选择偏移，不存在的本地时间需手工校准。旧备份的原值将保留。</p>
+      <label>来源时区<input id="timeSourceZone" list="timeZoneOptions" required placeholder="Australia/Sydney"></label>
+      <datalist id="timeZoneOptions"><option value="Australia/Sydney"></option><option value="Asia/Shanghai"></option><option value="UTC"></option></datalist>
+      <div id="timeResolutionRows" style="max-height:50vh;overflow:auto"></div>
+      <p id="timeResolutionError" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="button ghost" data-close-dialog="timeResolutionDialog">取消</button><button type="submit" class="button primary">确认时刻</button></div>
+    </form>
+  </dialog>
+  <script src="time-contract.js"></script>
   <script src="local-backend.js"></script>
   <script src="app.js"></script>
 </body>

@@ -60,11 +60,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m py_compile app.py
+          python -m py_compile app.py update_recovery.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/app.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/local-backend.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check static/time-contract.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --check static/sw.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -75,8 +77,16 @@ jobs:
       - name: Run browser regressions
         run: npm run test:browser
 
+      - name: Run isolated Windows upgrade process tests
+        run: npm run test:upgrade
+
       - name: Build Windows executable
         run: pyinstaller --noconfirm --clean LeyLineBook.spec
+
+      - name: Smoke-test packaged timezone data
+        run: |
+          python -B -X utf8 scripts/frozen_time_smoke.py --exe dist/LeyLineBook.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Smoke-test packaged executable
         shell: pwsh

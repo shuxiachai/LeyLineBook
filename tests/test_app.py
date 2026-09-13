@@ -4,7 +4,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -360,12 +360,12 @@ class TaskRecorderTest(unittest.TestCase):
             }
         )
 
-        app.toggle_task(task["id"], due_date, True, used_at.isoformat(timespec="minutes"))
+        app.toggle_task(task["id"], due_date, True, used_at.astimezone(timezone.utc).isoformat(timespec="minutes"))
         with app.db_connection() as connection:
             advanced = connection.execute(
                 "SELECT next_due FROM tasks WHERE id = ?", (task["id"],)
             ).fetchone()[0]
-        self.assertEqual(advanced, (used_at + timedelta(hours=168)).isoformat(timespec="minutes"))
+        self.assertEqual(advanced, app.utc_text(used_at.astimezone(timezone.utc) + timedelta(hours=168)))
         cooling_state = app.load_state(due_date)
         completed_task = next(item for item in cooling_state["dueTasks"] if item["id"] == task["id"])
         self.assertTrue(completed_task["completed"])
@@ -777,7 +777,8 @@ class TaskRecorderTest(unittest.TestCase):
 
         backup = app.build_backup_payload()
         self.assertEqual(backup["format"], "leylinebook-backup")
-        self.assertEqual(backup["schemaVersion"], 3)
+        self.assertEqual(backup["schemaVersion"], 4)
+        self.assertEqual(backup["timeContractVersion"], 2)
         acc_before = len(backup["data"]["accounts"])
         rec_before = len(backup["data"]["records"])
         app.import_backup(backup)
@@ -1104,7 +1105,7 @@ class TaskRecorderTest(unittest.TestCase):
         )
         used_at = datetime.now().replace(second=0, microsecond=0)
 
-        app.toggle_task(task["id"], selected_date, True, used_at.isoformat(timespec="minutes"))
+        app.toggle_task(task["id"], selected_date, True, used_at.astimezone(timezone.utc).isoformat(timespec="minutes"))
 
         with app.db_connection() as connection:
             next_due = connection.execute(
@@ -1112,7 +1113,7 @@ class TaskRecorderTest(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(
             next_due,
-            (used_at + timedelta(hours=15)).isoformat(timespec="minutes"),
+            app.utc_text(used_at.astimezone(timezone.utc) + timedelta(hours=15)),
         )
         completed = next(
             item for item in app.load_state(selected_date)["dueTasks"]
@@ -1370,12 +1371,22 @@ class TaskRecorderTest(unittest.TestCase):
                     filename,
                 )
 
-    def test_update_batch_deletes_old_exe_only_after_health_signal(self):
+    def test_update_batch_preserves_old_exe_and_reports_bounded_health(self):
         batch = app._build_update_batch(
-            Path("new.part"), Path("LeyLineBook-new.exe"), Path("LeyLineBook-old.exe"), Path("health.ok")
+            Path("new.part"), Path("LeyLineBook-new.exe"), Path("LeyLineBook-old.exe"), Path("health.ok"), Path("recovery")
         )
-        self.assertIn("--update-health-file", batch)
-        self.assertLess(batch.index(":healthy"), batch.index("LeyLineBook-old.exe"))
+        chunks = [line.split("=", 1)[1][:-1] for line in batch.splitlines() if line.startswith('set "LLB_UPDATE_')]
+        self.assertTrue(chunks)
+        script = app.base64.b64decode("".join(chunks)).decode("utf-16-le")
+        self.assertIn("--update-health-file", script)
+        self.assertIn("Elapsed.TotalSeconds -lt 30", script)
+        self.assertIn("update-failed.txt", script)
+        self.assertIn("update-succeeded.txt", script)
+        self.assertIn("health_timeout", script)
+        self.assertNotIn("Remove-Item", script)
+        with patch.object(app, "build_update_batch", return_value="coordinator") as generate:
+            self.assertEqual(app._build_update_batch(Path("a"), Path("b"), Path("c"), Path("h")), "coordinator")
+            generate.assert_called_once_with(Path("a"), Path("b"), Path("c"), Path("h"), None)
 
     def test_update_health_marker_is_created_only_in_temp_directory(self):
         marker = Path(tempfile.gettempdir()) / f"LeyLineBook-update-health-{app.secrets.token_hex(8)}.ok"

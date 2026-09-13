@@ -11,7 +11,6 @@ import mimetypes
 import os
 import re
 import secrets
-import shutil
 import socket
 import sqlite3
 import subprocess
@@ -19,15 +18,18 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.request
 import webbrowser
 from contextlib import closing, contextmanager, nullcontext
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from update_recovery import build_update_batch, prepare_update_recovery, startup_recovery
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 RUNTIME_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
@@ -40,10 +42,6 @@ if os.environ.get("LEYLINEBOOK_DATA_DIR"):
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "task_records.db"
 LOG_PATH = DATA_DIR / "task_recorder.log"
-
-_legacy_db = APP_DIR / "task_records.db"
-if not os.environ.get("LEYLINEBOOK_DATA_DIR") and APP_DIR != DATA_DIR and _legacy_db.exists() and not DB_PATH.exists():
-    shutil.copy2(_legacy_db, DB_PATH)
 
 TASK_TAG_PRESETS = {
     "体力": {"recurrence": "daily"},
@@ -68,10 +66,11 @@ DAILY_CATEGORY_TASKS = frozenset(("体力", "狗粮", "质变仪", "壶", "爱�
 OFFICIAL_VERSION_ANCHOR = "2026-05-20"
 VERSION_LENGTH_DAYS = 42
 HEARTBEAT_TIMEOUT = 75
-APP_VERSION = "3.0.5"
+APP_VERSION = "3.0.6"
 GITHUB_REPO = "shuxiachai/LeyLineBook"
 BACKUP_FORMAT = "leylinebook-backup"
-BACKUP_SCHEMA_VERSION = 3
+BACKUP_SCHEMA_VERSION = 4
+TIME_CONTRACT_VERSION = 2
 MAX_UPDATE_SIZE = 250 * 1024 * 1024
 ALLOWED_UPDATE_HOSTS = frozenset(
     ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "github-releases.githubusercontent.com")
@@ -211,26 +210,8 @@ def _batch_quote(value: Path | str) -> str:
     return f'"{str(value).replace("%", "%%")}"'
 
 
-def _build_update_batch(temp_exe: Path, new_exe: Path, current_exe: Path, health_file: Path) -> str:
-    lines = [
-        "@echo off",
-        "setlocal",
-        "timeout /t 2 /nobreak > nul",
-        f"move /y {_batch_quote(temp_exe)} {_batch_quote(new_exe)} > nul",
-        "if errorlevel 1 goto cleanup",
-        f"start \"\" {_batch_quote(new_exe)} --update-health-file {_batch_quote(health_file)}",
-        "for /l %%i in (1,1,30) do (",
-        "  timeout /t 1 /nobreak > nul",
-        f"  if exist {_batch_quote(health_file)} goto healthy",
-        ")",
-        "goto cleanup",
-        ":healthy",
-        f"del /q {_batch_quote(health_file)} > nul 2>&1",
-    ]
-    if current_exe != new_exe:
-        lines.append(f"del /q {_batch_quote(current_exe)} > nul 2>&1")
-    lines.extend((":cleanup", 'del "%~f0"'))
-    return "\r\n".join(lines) + "\r\n"
+def _build_update_batch(temp_exe: Path, new_exe: Path, current_exe: Path, health_file: Path, recovery_dir: Path | None = None) -> str:
+    return build_update_batch(temp_exe, new_exe, current_exe, health_file, recovery_dir)
 
 
 def check_for_update() -> dict:
@@ -287,15 +268,17 @@ def _start_update_locked() -> None:
         try:
             temp_exe = _download_verified_update(download_url, checksum_url, expected_filename)
             new_exe = current_exe.parent / expected_filename
+            recovery_dir = prepare_update_recovery(DB_PATH, current_exe, new_exe)
             health_file = Path(tempfile.gettempdir()) / f"LeyLineBook-update-health-{secrets.token_hex(8)}.ok"
             bat_path = Path(tempfile.gettempdir()) / f"leylinebook_update-{secrets.token_hex(8)}.bat"
             bat_path.write_text(
-                _build_update_batch(temp_exe, new_exe, current_exe, health_file), encoding="mbcs"
+                _build_update_batch(temp_exe, new_exe, current_exe, health_file, recovery_dir), encoding="mbcs"
             )
             _update_state["status"] = "done"
             time.sleep(0.4)
             subprocess.Popen(
-                ["cmd.exe", "/c", str(bat_path)],
+                ["cmd.exe", "/d", "/c", bat_path.name],
+                cwd=str(bat_path.parent),
                 creationflags=0x00000008,
                 close_fds=True,
             )
@@ -417,9 +400,19 @@ def backup_before_schema_migration():
                 raise ValueError("升级前备份校验失败，已停止迁移")
 
 
-def initialize_database() -> None:
-    backup_before_schema_migration()
-    with db_connection(foreign_keys=False) as connection:
+def initialize_database(*, update_health_file: str | None = None) -> None:
+    _validate_update_health_file(update_health_file)
+    frozen = getattr(sys, "frozen", False)
+    legacy_db = (
+        APP_DIR / "task_records.db"
+        if frozen and not os.environ.get("LEYLINEBOOK_DATA_DIR")
+        and APP_DIR != DATA_DIR and DB_PATH.parent == DATA_DIR else None
+    )
+    with startup_recovery(
+        DB_PATH, current_exe=Path(sys.executable).resolve() if frozen else None,
+        legacy_db=legacy_db, automatic=frozen and update_health_file is not None,
+    ) as connection:
+        backup_before_schema_migration()
         execute_sql_script(connection,
             """
             CREATE TABLE IF NOT EXISTS app_meta (
@@ -949,13 +942,34 @@ def optional_local_datetime(value) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
+    validate_backup_date(text, moment=True)
     parsed = datetime.fromisoformat(text)
-    if parsed.tzinfo is not None:
-        raise ValueError("使用时间应为本地时间")
+    if parsed.tzinfo is None:
+        raise ValueError("请确认时区后提交带偏移量的使用时间")
+    parsed = parsed.astimezone(timezone.utc)
     parsed = parsed.replace(second=0, microsecond=0)
-    if parsed > datetime.now() + timedelta(minutes=5):
+    if parsed > datetime.now(timezone.utc) + timedelta(minutes=5):
         raise ValueError("使用时间不能晚于当前时间")
     return parsed
+
+
+def utc_text(moment: datetime) -> str:
+    if moment.tzinfo is None:
+        raise ValueError("精确时间缺少时区")
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def moment_difference(moment: datetime, reference: datetime) -> float:
+    # Legacy values retain wall-clock semantics until explicitly resolved on import.
+    if moment.tzinfo is None:
+        local_reference = reference.astimezone().replace(tzinfo=None) if reference.tzinfo else reference
+        return (moment - local_reference).total_seconds()
+    return (moment - reference.astimezone(timezone.utc)).total_seconds()
+
+
+def record_time_key(record, *, precise=False) -> tuple:
+    moment = datetime.fromisoformat(record["completed_at"]).timestamp()
+    return (moment, record["id"]) if precise else (record["task_date"], moment, record["id"])
 
 
 def exact_due_moment(value: str | None) -> datetime | None:
@@ -1167,9 +1181,9 @@ def load_state(selected_date: str) -> dict:
                 task["next_due"]
                 and (
                     (
-                        precise_due <= now
+                        moment_difference(precise_due, now) <= 0
                         if is_current_game_day
-                        else precise_due < selected_game_day_end
+                        else moment_difference(precise_due, selected_game_day_end) < 0
                     )
                     if precise_due
                     else task["next_due"] <= selected_date
@@ -1178,12 +1192,13 @@ def load_state(selected_date: str) -> dict:
             if precise_due:
                 if task["name"] == "探索派遣" and is_current_game_day and is_due:
                     task["completed"] = False
-                task["available_at"] = precise_due.isoformat(timespec="minutes")
+                task["time_semantics"] = "absolute" if precise_due.tzinfo else "legacy-local"
+                task["available_at"] = utc_text(precise_due) if precise_due.tzinfo else precise_due.isoformat(timespec="minutes")
                 task["cooldown_remaining_seconds"] = max(
-                    0, int((precise_due - now).total_seconds())
+                    0, int(moment_difference(precise_due, now))
                 )
             still_cooling = (
-                is_current_game_day and precise_due is not None and precise_due > now
+                is_current_game_day and precise_due is not None and moment_difference(precise_due, now) > 0
             )
             if task["completed"] or is_due or still_cooling:
                 due_tasks.append(task)
@@ -1215,7 +1230,7 @@ def load_state(selected_date: str) -> dict:
         return (
             not task["completed"]
             and task.get("available_at")
-            and datetime.fromisoformat(task["available_at"]) >= selected_game_day_end
+            and moment_difference(datetime.fromisoformat(task["available_at"]), selected_game_day_end) >= 0
         )
     countable_tasks = [task for task in due_tasks if not _long_cooling(task)]
     completed_count = sum(1 for task in countable_tasks if task["completed"])
@@ -1223,6 +1238,7 @@ def load_state(selected_date: str) -> dict:
     daily_completed_count = sum(1 for task in daily_tasks if task["completed"])
     return {
         "date": selected_date,
+        "timeContractVersion": TIME_CONTRACT_VERSION,
         "accounts": accounts,
         "tasks": all_tasks,
         "dueTasks": due_tasks,
@@ -1247,7 +1263,7 @@ def list_history(start_date: str, end_date: str, account_id: int | None = None) 
     account_filter = "AND a.id = ?" if account_id else ""
     params = (start_date, end_date, account_id) if account_id else (start_date, end_date)
     with db_connection() as connection:
-        return [
+        return sorted([
             row_to_dict(row)
             for row in connection.execute(
                 f"""
@@ -1261,7 +1277,7 @@ def list_history(start_date: str, end_date: str, account_id: int | None = None) 
                 """,
                 params,
             )
-        ]
+        ], key=record_time_key, reverse=True)
 
 
 def _parse_proxy_until(payload: dict) -> str | None:
@@ -1492,19 +1508,22 @@ def reset_database() -> None:
             DELETE FROM custom_task_tags;
             DELETE FROM care_plans;
             DELETE FROM accounts;
-            DELETE FROM app_meta;
+            DELETE FROM app_meta WHERE key <> 'startup_time_contract_v2';
         """)
     initialize_database()
 
 
 def build_backup_payload(connection=None) -> dict:
     with (db_connection(write=False) if connection is None else nullcontext(connection)) as connection:
+        archive = connection.execute("SELECT value FROM app_meta WHERE key = 'time_legacy_archive'").fetchone()
         return {
             "format": BACKUP_FORMAT,
             "schemaVersion": BACKUP_SCHEMA_VERSION,
             "appVersion": APP_VERSION,
+            "timeContractVersion": TIME_CONTRACT_VERSION,
             "exportedAt": now_text(),
             "data": {
+                "timeLegacyArchive": json.loads(archive[0]) if archive else [],
                 "settings": {"versionAnchorDate": get_version_anchor(connection)},
                 "accounts": [
                     {k: v for k, v in row_to_dict(row).items() if k != "credentials"}
@@ -1535,13 +1554,15 @@ def validate_backup_date(value, *, moment=False):
         raise ValueError("备份中的日期格式无效")
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         date.fromisoformat(value)
-    elif moment and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?", value):
+    elif moment and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?", value):
         datetime.fromisoformat(value)
     else:
         raise ValueError("备份中的日期格式无效")
 
 
 def validate_backup_data(data):
+    if not isinstance(data.get("timeLegacyArchive", []), list):
+        raise ValueError("旧时间确认记录格式无效")
     settings = data.get("settings", {})
     if not isinstance(settings, dict):
         raise ValueError("备份中的设置格式无效")
@@ -1592,6 +1613,8 @@ def validate_backup_data(data):
     record_keys = set()
     task_by_id = {str(task["id"]): task for task in data.get("tasks", [])}
     for record in data.get("records", []):
+        if "completed_at" in record and not record["completed_at"]:
+            raise ValueError("备份中的完成时间不能为空")
         if not record.get("task_date"):
             raise ValueError("备份中的完成日期不能为空")
         key = (str(record.get("task_id")), record["task_date"], record.get("note", ""))
@@ -1614,9 +1637,11 @@ def _normalize_backup_payload(payload: dict) -> dict:
     else:
         if payload.get("format") != BACKUP_FORMAT:
             raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
-        if payload.get("schemaVersion") not in (2, BACKUP_SCHEMA_VERSION):
+        if payload.get("schemaVersion") not in (2, 3, BACKUP_SCHEMA_VERSION):
             version = payload.get("schemaVersion", "未知")
             raise ValueError(f"不支持的备份版本：{version}")
+        if payload.get("schemaVersion") == BACKUP_SCHEMA_VERSION and payload.get("timeContractVersion") != TIME_CONTRACT_VERSION:
+            raise ValueError("不支持的备份时间契约版本")
         data = payload.get("data")
         if not isinstance(data, dict):
             raise ValueError("备份文件格式无效，请选择由本程序导出的 JSON 文件")
@@ -1663,6 +1688,60 @@ def _normalize_backup_payload(payload: dict) -> dict:
     return data
 
 
+def resolve_backup_times(data: dict, resolution=None, *, preserve_legacy=False) -> dict:
+    result = json.loads(json.dumps(data))
+    tasks = {str(task["id"]): task for task in result.get("tasks", [])}
+    precise_ids = {key for key, task in tasks.items() if task.get("recurrence") == "interval" and task["name"] in {"质变仪", "探索派遣"}}
+    fields = []
+    for index, task in enumerate(result.get("tasks", [])):
+        if str(task["id"]) in precise_ids:
+            fields.append((f"tasks/{index}/next_due", task, "next_due"))
+    for index, record in enumerate(result.get("records", [])):
+        if str(record["task_id"]) in precise_ids:
+            fields.extend((f"records/{index}/{field}", record, field) for field in ("completed_at", "previous_next_due"))
+    legacy = [(key, row, field) for key, row, field in fields if exact_due_moment(row.get(field)) is not None and exact_due_moment(row[field]).tzinfo is None]
+    if legacy and not preserve_legacy:
+        if not isinstance(resolution, dict) or resolution.get("confirmed") is not True or not isinstance(resolution.get("sourceZone"), str) or not resolution["sourceZone"].strip() or len(resolution["sourceZone"]) > 100:
+            raise ValueError("旧冷却时间缺少时区，请先确认来源时区和重复小时")
+        try:
+            source_zone = ZoneInfo(resolution["sourceZone"])
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("旧时间的来源时区无效，请选择有效的 IANA 时区") from None
+        choices = resolution.get("entries")
+        if not isinstance(choices, list) or any(not isinstance(entry, dict) for entry in choices):
+            raise ValueError("旧时间确认记录格式无效")
+        by_key = {entry.get("key"): entry for entry in choices}
+        if len(by_key) != len(legacy) or len(choices) != len(legacy):
+            raise ValueError("旧时间确认记录不完整")
+        for key, row, field in legacy:
+            chosen = by_key.get(key, {})
+            if chosen.get("original") != row[field]:
+                raise ValueError("旧时间确认记录已失效")
+            validate_backup_date(chosen.get("local"), moment=True)
+            validate_backup_date(chosen.get("instant"), moment=True)
+            local = exact_due_moment(chosen.get("local"))
+            instant = exact_due_moment(chosen.get("instant"))
+            offset = chosen.get("offsetMinutes")
+            if local is None or local.tzinfo is not None or instant is None or instant.tzinfo is None or type(offset) is not int or not -1439 <= offset <= 1439:
+                raise ValueError("旧时间确认需要明确的本地时间、UTC时刻和偏移量")
+            zoned = instant.astimezone(source_zone)
+            if zoned.replace(tzinfo=None) != local or zoned.utcoffset() != timedelta(minutes=offset):
+                raise ValueError("旧时间的时区或重复小时选择无效")
+            row[field] = utc_text(instant)
+        result["timeLegacyArchive"] = [*result.get("timeLegacyArchive", []), resolution]
+    for _, row, field in fields:
+        moment = exact_due_moment(row.get(field))
+        if moment is not None and moment.tzinfo is not None:
+            row[field] = utc_text(moment)
+    for record in result.get("records", []):
+        if str(record["task_id"]) in precise_ids and record.get("note", "").startswith("expedition:"):
+            moment = exact_due_moment(record.get("completed_at"))
+            if moment is not None and moment.tzinfo is not None:
+                record["note"] = f"expedition:{utc_text(moment)}"
+    validate_backup_data(result)
+    return result
+
+
 def _write_pre_import_snapshot(connection=None) -> None:
     snapshot = build_backup_payload(connection)
     if not any(isinstance(value, list) and value for value in snapshot["data"].values()):
@@ -1675,8 +1754,8 @@ def _write_pre_import_snapshot(connection=None) -> None:
         stale.unlink(missing_ok=True)
 
 
-def import_backup(payload: dict) -> None:
-    data = _normalize_backup_payload(payload)
+def import_backup(payload: dict, *, preserve_legacy=False) -> None:
+    data = resolve_backup_times(_normalize_backup_payload(payload), payload.get("timeResolution"), preserve_legacy=preserve_legacy)
     with db_connection(foreign_keys=False) as connection:
         _write_pre_import_snapshot(connection)
         for table in ("task_records", "tasks", "account_group_notes",
@@ -1742,7 +1821,7 @@ def import_backup(payload: dict) -> None:
             if task_new is None:
                 continue
             connection.execute(
-                "INSERT OR IGNORE INTO task_records(task_id,task_date,completed_at,previous_next_due,note) VALUES(?,?,?,?,?)",
+                "INSERT INTO task_records(task_id,task_date,completed_at,previous_next_due,note) VALUES(?,?,?,?,?)",
                 (task_new, row.get("task_date", ""),
                  row.get("completed_at", now_text()), row.get("previous_next_due"), row.get("note", "")),
             )
@@ -1765,6 +1844,10 @@ def import_backup(payload: dict) -> None:
         connection.execute(
             "INSERT OR REPLACE INTO app_meta(key, value) VALUES('version_anchor_date', ?)",
             ((data.get("settings") or {}).get("versionAnchorDate", OFFICIAL_VERSION_ANCHOR),),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO app_meta(key, value) VALUES('time_legacy_archive', ?)",
+            (json.dumps(data.get("timeLegacyArchive", []), ensure_ascii=False),),
         )
 
 
@@ -2151,7 +2234,11 @@ def _insert_preset_task(connection: sqlite3.Connection, account_id: int, task_na
     if recurrence == "interval":
         next_due = game_today().isoformat()
     elif recurrence == "monthly":
-        next_due = monthly_occurrence(game_today(), monthly_day).isoformat()
+        today = game_today()
+        occurrence = monthly_occurrence(today, monthly_day)
+        if occurrence > today:
+            occurrence = monthly_occurrence(today.replace(day=1) - timedelta(days=1), monthly_day)
+        next_due = occurrence.isoformat()
     elif recurrence == "version":
         version_anchor = get_version_anchor(connection)
         window = version_window(version_anchor)
@@ -2209,14 +2296,18 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
         if not task:
             raise LookupError("没有找到该任务")
         is_expedition = task["name"] == "探索派遣" and task["recurrence"] == "interval"
+        is_precise = task["recurrence"] == "interval" and task["name"] in ("质变仪", "探索派遣")
+        supplied_used_at = optional_local_datetime(used_at) if completed and is_precise else None
+        if completed and is_precise and supplied_used_at is None and parsed_task_date != game_today():
+            raise ValueError("历史精确冷却任务请单独补记实际使用时间，不能批量使用当前时间")
+        precise_used_at = (supplied_used_at or datetime.now(timezone.utc).replace(second=0, microsecond=0)) if completed and is_precise else None
         task_records = connection.execute(
             "SELECT * FROM task_records WHERE task_id = ? ORDER BY task_date DESC, completed_at DESC, id DESC", (task_id,)
         ).fetchall()
-        precise_expedition = None
+        task_records = sorted(task_records, key=lambda record: record_time_key(record, precise=is_precise), reverse=True)
         if is_expedition:
             if completed:
-                precise_expedition = optional_local_datetime(used_at) or datetime.now().replace(second=0, microsecond=0)
-                cycle_key = f"expedition:{precise_expedition.isoformat(timespec='minutes')}"
+                cycle_key = f"expedition:{utc_text(precise_used_at)}"
                 existing = next((record for record in task_records if record["note"] == cycle_key), None)
             else:
                 cycle_key = ""
@@ -2237,22 +2328,19 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
         if task["recurrence"] in {"interval", "monthly", "version"} and task_records:
             if not completed and existing and task_records[0]["id"] != existing["id"]:
                 raise ValueError("请先撤销该任务较新的完成记录")
-            if completed and not existing and task_records[0]["task_date"] > task_date:
-                raise ValueError("不能在较新的完成记录之前补记周期任务")
-        if precise_expedition and not existing and task_records:
+            if completed and not existing:
+                out_of_order = moment_difference(datetime.fromisoformat(task_records[0]["completed_at"]), precise_used_at) > 0 if is_precise else task_records[0]["task_date"] > task_date
+                if out_of_order:
+                    raise ValueError("不能在较新的完成记录之前补记周期任务")
+        if precise_used_at and not existing and task_records:
             due = exact_due_moment(task["next_due"])
-            if due and precise_expedition < due:
-                if not used_at:
+            if due and moment_difference(due, precise_used_at) > 0:
+                if supplied_used_at is None and is_expedition:
                     return
-                raise ValueError("派遣尚未到期，请检查收取时间")
+                raise ValueError("派遣尚未到期，请检查收取时间" if is_expedition else "质变仪尚未到期，请检查使用时间")
 
         if completed and not existing:
             previous_due = task["next_due"]
-            precise_used_at = None
-            if task["name"] in ("质变仪", "探索派遣") and task["recurrence"] == "interval":
-                precise_used_at = precise_expedition or optional_local_datetime(used_at) or datetime.now().replace(
-                    second=0, microsecond=0
-                )
             connection.execute(
                 """
                 INSERT INTO task_records(task_id, task_date, completed_at, previous_next_due, note)
@@ -2261,7 +2349,7 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
                 (
                     task_id,
                     task_date,
-                    precise_used_at.isoformat(timespec="seconds") if precise_used_at else now_text(),
+                    utc_text(precise_used_at) if precise_used_at else now_text(),
                     previous_due,
                     cycle_key,
                 ),
@@ -2269,11 +2357,11 @@ def toggle_task(task_id: int, task_date: str, completed: bool, used_at=None, con
             if task["recurrence"] == "interval":
                 if precise_used_at and task["name"] == "质变仪":
                     next_due = precise_used_at + timedelta(hours=24 * task["interval_days"])
-                    next_due_text = next_due.isoformat(timespec="minutes")
+                    next_due_text = utc_text(next_due)
                 elif precise_used_at and task["name"] == "探索派遣":
                     hours = _expedition_hours_from_notes(task["notes"])
                     next_due = precise_used_at + timedelta(hours=hours)
-                    next_due_text = next_due.isoformat(timespec="minutes")
+                    next_due_text = utc_text(next_due)
                 else:
                     if not task["interval_days"]:
                         raise ValueError("任务冷却天数未配置，请检查任务设置")
@@ -2697,15 +2785,24 @@ def launch_window(url: str) -> bool:
         return False
 
 
-def _write_update_health_file(value: str | None) -> None:
-    if not value:
-        return
+def _validate_update_health_file(value: str | None) -> Path | None:
+    if value is None:
+        return None
     candidate = Path(value)
     expected_name = re.fullmatch(r"LeyLineBook-update-health-[0-9a-f]{16}\.ok", candidate.name)
     if not candidate.is_absolute() or not expected_name:
         raise ValueError("更新健康检查文件路径无效")
     if candidate.parent.resolve() != Path(tempfile.gettempdir()).resolve():
         raise ValueError("更新健康检查文件路径无效")
+    if candidate.exists() or candidate.is_symlink():
+        raise FileExistsError("Update health marker already exists")
+    return candidate
+
+
+def _write_update_health_file(value: str | None) -> None:
+    candidate = _validate_update_health_file(value)
+    if candidate is None:
+        return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_BINARY"):
         flags |= os.O_BINARY
@@ -2719,7 +2816,7 @@ def run_server(port: int, mode: str, update_health_file: str | None = None) -> N
         sys.stdout = LOG_PATH.open("a", encoding="utf-8")
     if sys.stderr is None:
         sys.stderr = LOG_PATH.open("a", encoding="utf-8")
-    initialize_database()
+    initialize_database(update_health_file=update_health_file)
     server, port = create_http_server(port)
     url = f"http://127.0.0.1:{port}"
     server.update_health_file = update_health_file
@@ -2800,7 +2897,7 @@ def stop_running_server(port: int) -> None:
     raise RuntimeError("旧版本未能正常关闭，请稍后重试")
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(description="LeyLineBook / 地脉簿")
     parser.add_argument("--port", type=int, default=int(os.environ.get("TASK_RECORDER_PORT", "8765")))
     parser.add_argument("--browser", action="store_true", help="使用系统浏览器打开界面（旧模式）")
@@ -2813,6 +2910,24 @@ if __name__ == "__main__":
         startup_mode = "browser"
     else:
         startup_mode = "window"
-    if is_already_running(arguments.port):
-        stop_running_server(arguments.port)
-    run_server(arguments.port, startup_mode, arguments.update_health_file)
+    try:
+        if is_already_running(arguments.port):
+            stop_running_server(arguments.port)
+        run_server(arguments.port, startup_mode, arguments.update_health_file)
+    except Exception:
+        if not arguments.no_browser:
+            raise
+        # A windowed frozen build must also fail without a popup in headless mode.
+        try:
+            if sys.stderr is None:
+                with LOG_PATH.open("a", encoding="utf-8") as error_log:
+                    traceback.print_exc(file=error_log)
+            else:
+                traceback.print_exc()
+        except Exception:
+            pass  # An unavailable log must not turn headless failure into a GUI error.
+        raise SystemExit(1) from None
+
+
+if __name__ == "__main__":
+    main()

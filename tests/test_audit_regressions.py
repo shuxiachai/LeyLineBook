@@ -72,14 +72,14 @@ class DataRegressionTest(unittest.TestCase):
 
     def test_expedition_has_multiple_occurrences_per_day_and_idempotent_retries(self):
         task = self.task("探索派遣", None, "派遣:15小时")
-        app.toggle_task(task, "2026-06-14", True, "2026-06-14T04:10")
-        app.toggle_task(task, "2026-06-14", True, "2026-06-14T04:10")
+        app.toggle_task(task, "2026-06-14", True, "2026-06-14T04:10+10:00")
+        app.toggle_task(task, "2026-06-14", True, "2026-06-14T04:10+10:00")
         with self.assertRaisesRegex(ValueError, "尚未到期"):
-            app.toggle_task(task, "2026-06-14", True, "2026-06-14T05:00")
-        app.toggle_task(task, "2026-06-14", True, "2026-06-14T19:20")
+            app.toggle_task(task, "2026-06-14", True, "2026-06-14T05:00+10:00")
+        app.toggle_task(task, "2026-06-14", True, "2026-06-14T19:20+10:00")
         data = app.build_backup_payload()["data"]
         self.assertEqual(len(data["records"]), 2)
-        self.assertEqual(data["tasks"][0]["next_due"], "2026-06-15T10:20")
+        self.assertEqual(data["tasks"][0]["next_due"], "2026-06-15T00:20:00Z")
         app.import_backup(app.build_backup_payload())
         self.assertEqual(len(app.build_backup_payload()["data"]["records"]), 2)
 

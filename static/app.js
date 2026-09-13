@@ -550,6 +550,68 @@ async function loadState() {
   renderHistoryAccountFilter();
 }
 
+function confirmTimeEntries(entries, sourceZone = "", title = "确认旧时间来源") {
+  const dialog = document.querySelector("#timeResolutionDialog");
+  const form = document.querySelector("#timeResolutionForm");
+  const zoneInput = document.querySelector("#timeSourceZone");
+  const rows = document.querySelector("#timeResolutionRows");
+  const error = document.querySelector("#timeResolutionError");
+  document.querySelector("#timeResolutionTitle").textContent = title;
+  zoneInput.value = sourceZone;
+  error.textContent = "";
+  rows.innerHTML = entries.map((entry, index) => `<div data-time-entry="${index}"><label>${escapeHtml(entry.label)}<input type="datetime-local" step="1" value="${escapeHtml(entry.original)}" required></label><label>时刻与偏移<select required></select></label></div>`).join("");
+  const controller = new AbortController();
+  const refresh = () => {
+    error.textContent = "";
+    for (const row of rows.children) {
+      const value = row.querySelector("input").value;
+      const select = row.querySelector("select");
+      select.innerHTML = '<option value="">请选择具体时刻</option>';
+      if (!zoneInput.value.trim()) continue;
+      try {
+        const options = LEYLINE_TIME.candidates(value, zoneInput.value.trim());
+        for (const instant of options) {
+          const offset = (LEYLINE_TIME.wallMillis(value) - new Date(instant).getTime()) / 60000;
+          const abs = Math.abs(offset);
+          const label = `UTC${offset >= 0 ? "+" : "-"}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")} (${instant})`;
+          select.add(new Option(label, instant));
+        }
+        if (options.length === 1) select.value = options[0];
+        if (!options.length) error.textContent = "该时区不存在此本地时间，请校准本地时间后再确认。";
+      } catch (cause) { error.textContent = cause.message; }
+    }
+  };
+  form.addEventListener("input", (event) => { if (event.target.tagName !== "SELECT") refresh(); }, { signal: controller.signal });
+  refresh();
+  return new Promise((resolve) => {
+    let result = null;
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      try {
+        result = { confirmed: true, sourceZone: zoneInput.value.trim(), entries: entries.map((entry, index) => {
+          const row = rows.children[index];
+          const local = row.querySelector("input").value;
+          const instant = row.querySelector("select").value;
+          if (!LEYLINE_TIME.candidates(local, zoneInput.value.trim()).includes(instant)) throw new Error("请重新核对时间与偏移");
+          return { key: entry.key, original: entry.original, local, instant, offsetMinutes: (LEYLINE_TIME.wallMillis(local) - new Date(instant).getTime()) / 60000 };
+        }) };
+        dialog.close();
+      } catch (cause) { error.textContent = cause.message; result = null; }
+    }, { signal: controller.signal });
+    dialog.addEventListener("close", () => { controller.abort(); resolve(result); }, { once: true });
+    dialog.showModal();
+  });
+}
+
+async function usageInstant(value) {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const candidates = LEYLINE_TIME.candidates(value, zone);
+  if (candidates.length === 1) return candidates[0];
+  const resolution = await confirmTimeEntries([{ key: "usage", original: value, label: "实际使用时间" }], zone, "确认实际使用时间");
+  return resolution?.entries[0].instant || null;
+}
+
 function requireLoadedDate() {
   if (state.loadingDate || !state.data || state.data.date !== state.selectedDate) {
     throw new Error("日期数据尚未加载完成，请稍后重试");
@@ -595,7 +657,7 @@ function taskGroupsHtml(tasks, emptyText, readOnly = false) {
   const groups = groupTasks(tasks);
   if (!groups.size) return `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
   const selectedGameDayEnd = gameDayEnd(state.selectedDate);
-  const isLongCooling = (t) => !t.completed && t.available_at && new Date(t.available_at) >= selectedGameDayEnd;
+  const isLongCooling = (t) => !t.completed && t.available_at && LEYLINE_TIME.remaining(t.available_at, selectedGameDayEnd) >= 0;
   return [...groups.entries()].map(([accountId, group]) => {
     const done = group.tasks.filter((task) => task.completed).length;
     const countable = group.tasks.filter((task) => !isLongCooling(task)).length;
@@ -644,7 +706,7 @@ function startCooldownTicker() {
   _cooldownTimer = setInterval(() => {
     let anyRemaining = false;
     for (const el of document.querySelectorAll("[data-available-at]")) {
-      const remaining = (new Date(el.dataset.availableAt) - Date.now()) / 1000;
+      const remaining = LEYLINE_TIME.remaining(el.dataset.availableAt);
       if (remaining > 0) {
         el.textContent = `还剩 ${formatCountdown(remaining)}`;
         anyRemaining = true;
@@ -702,6 +764,7 @@ function renderToday() {
 }
 
 function taskDescription(task) {
+  if (["质变仪", "探索派遣"].includes(task.name) && task.time_semantics === "legacy-local") return `旧本地时间（时区未确认） · 下次 ${String(task.available_at).replace("T", " ")}`;
   if (task.recurrence === "weekly") return "每周一 04:00 刷新";
   if (task.name === "质变仪" && task.available_at) return `168 小时冷却 · 下次可用 ${formatLocalDateTime(task.available_at)}`;
   if (task.name === "探索派遣") {
@@ -1152,7 +1215,7 @@ async function saveResinNote(clear) {
       return;
     }
     const value = Number(document.querySelector("#resinSlider").value);
-    notes.push(`${RESIN_PREFIX}${value}@${localDateTimeInputValue(new Date())}`);
+    notes.push(`${RESIN_PREFIX}${value}@${LEYLINE_TIME.utcText(LEYLINE_TIME.minuteInstant(new Date()))}`);
   }
   await api(`/api/tasks/${task.id}/notes`, { method: "POST", body: JSON.stringify({ notes }) });
   document.querySelector("#resinDialog").close();
@@ -1175,12 +1238,15 @@ function openTransformerUsageDialog(task) {
 
 async function saveTransformerUsage(event) {
   event.preventDefault();
-  const usedAt = document.querySelector("#transformerUsedAt").value;
-  await api(`/api/tasks/${state.editingTransformerTaskId}/toggle`, {
+  const taskId = state.editingTransformerTaskId;
+  const taskDate = state.transformerDate;
+  const usedAt = await usageInstant(document.querySelector("#transformerUsedAt").value);
+  if (!usedAt) return;
+  await api(`/api/tasks/${taskId}/toggle`, {
     method: "POST",
-    body: JSON.stringify({ date: state.transformerDate, completed: true, usedAt }),
+    body: JSON.stringify({ date: taskDate, completed: true, usedAt, timeContractVersion: LEYLINE_TIME.VERSION }),
   });
-  document.querySelector("#transformerUsageDialog").close();
+  if (state.editingTransformerTaskId === taskId) document.querySelector("#transformerUsageDialog").close();
   await loadState();
   showToast("已记录使用时间，168 小时后可再次使用");
 }
@@ -1203,12 +1269,15 @@ function openExpeditionUsageDialog(task) {
 
 async function saveExpeditionUsage(event) {
   event.preventDefault();
-  const usedAt = document.querySelector("#expeditionUsedAt").value;
-  await api(`/api/tasks/${state.editingExpeditionTaskId}/toggle`, {
+  const taskId = state.editingExpeditionTaskId;
+  const taskDate = state.expeditionDate;
+  const usedAt = await usageInstant(document.querySelector("#expeditionUsedAt").value);
+  if (!usedAt) return;
+  await api(`/api/tasks/${taskId}/toggle`, {
     method: "POST",
-    body: JSON.stringify({ date: state.expeditionDate, completed: true, usedAt }),
+    body: JSON.stringify({ date: taskDate, completed: true, usedAt, timeContractVersion: LEYLINE_TIME.VERSION }),
   });
-  document.querySelector("#expeditionUsageDialog").close();
+  if (state.editingExpeditionTaskId === taskId) document.querySelector("#expeditionUsageDialog").close();
   await loadState();
   showToast(`已记录收取时间，${state.editingExpeditionHours} 小时后可再次收取`);
 }
@@ -1291,7 +1360,11 @@ async function clearCredentials() {
   showToast("凭据已清除");
 }
 
+let accountDialogSession = 0;
+const accountSavesPending = new Set();
 function openAccountDialog(account = null) {
+  accountDialogSession += 1;
+  document.querySelector("#saveAccount").disabled = false;
   document.querySelector("#accountDialogTitle").textContent = account ? "编辑号主" : "新增号主";
   document.querySelector("#accountId").value = account?.id || "";
   document.querySelector("#accountName").value = account?.name || "";
@@ -1407,6 +1480,9 @@ function openTaskDialog(accountId, task = null) {
 
 async function saveAccount(event) {
   event.preventDefault();
+  const session = accountDialogSession;
+  if (accountSavesPending.has(session)) return;
+  const dialog = document.querySelector("#accountDialog");
   const id = document.querySelector("#accountId").value;
   const payload = {
     name: document.querySelector("#accountName").value,
@@ -1417,20 +1493,24 @@ async function saveAccount(event) {
   if (!id && document.querySelector("#accountPlan").value) {
     payload.planId = document.querySelector("#accountPlan").value;
   }
-  const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-  if (!id && !isPwaMode) {
-    const credUsername = document.querySelector("#accountCredUsername").value.trim();
-    const credPassword = document.querySelector("#accountCredPassword").value.trim();
-    const credNote = document.querySelector("#accountCredNote").value.trim();
-    if (credUsername || credPassword || credNote) {
-      await api(`/api/accounts/${result.id}/credentials`, {
-        method: "PUT",
-        body: JSON.stringify({ username: credUsername, password: credPassword, note: credNote }),
-      });
+  const credentials = !id && !isPwaMode ? {
+    username: document.querySelector("#accountCredUsername").value.trim(),
+    password: document.querySelector("#accountCredPassword").value.trim(),
+    note: document.querySelector("#accountCredNote").value.trim(),
+  } : null;
+  accountSavesPending.add(session);
+  document.querySelector("#saveAccount").disabled = true;
+  try {
+    const result = await api(id ? `/api/accounts/${id}` : "/api/accounts", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    if (credentials && Object.values(credentials).some(Boolean)) {
+      await api(`/api/accounts/${result.id}/credentials`, { method: "PUT", body: JSON.stringify(credentials) });
     }
+    if (accountDialogSession === session && dialog.open) dialog.close();
+    await refreshAfterSave(id ? "号主信息已更新" : "号主已添加");
+  } finally {
+    accountSavesPending.delete(session);
+    if (accountDialogSession === session) document.querySelector("#saveAccount").disabled = false;
   }
-  document.querySelector("#accountDialog").close();
-  await refreshAfterSave(id ? "号主信息已更新" : "号主已添加");
 }
 
 async function saveTask(event) {
@@ -1789,7 +1869,7 @@ let historyRowsCache = [];
 function renderHistoryRows() {
   const taskName = document.querySelector("#historyTask").value;
   const rows = taskName ? historyRowsCache.filter((row) => row.task_name === taskName) : historyRowsCache;
-  document.querySelector("#historyRows").innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.task_date)}</td><td>${escapeHtml(row.account_name)}</td><td>${escapeHtml(row.task_name)}</td><td>${escapeHtml(row.completed_at.replace("T", " "))}</td></tr>`).join("") || '<tr><td colspan="4" class="empty-state">这个日期范围内还没有记录。</td></tr>';
+  document.querySelector("#historyRows").innerHTML = rows.map((row) => `<tr><td>${escapeHtml(row.task_date)}</td><td>${escapeHtml(row.account_name)}</td><td>${escapeHtml(row.task_name)}</td><td>${escapeHtml(LEYLINE_TIME.isInstant(row.completed_at) ? formatLocalDateTime(row.completed_at) : row.completed_at.replace("T", " "))}</td></tr>`).join("") || '<tr><td colspan="4" class="empty-state">这个日期范围内还没有记录。</td></tr>';
 }
 
 async function loadHistory() {
@@ -1907,6 +1987,12 @@ async function importBackup(event) {
     showToast("文件格式无效，请选择由本程序导出的 JSON 备份文件");
     return;
   }
+  const legacyEntries = LEYLINE_TIME.legacyEntries(data.data || data);
+  if (legacyEntries.length) {
+    const resolution = await confirmTimeEntries(legacyEntries);
+    if (!resolution) return;
+    data = { ...data, timeResolution: resolution };
+  }
   const confirmed = await confirmAction({
     title: "导入备份？",
     message: isPwaMode
@@ -1916,7 +2002,7 @@ async function importBackup(event) {
   });
   if (!confirmed) return;
   try {
-    await api("/api/import", { method: "POST", body: text });
+    await api("/api/import", { method: "POST", body: JSON.stringify(data) });
   } catch (error) {
     showToast(error.message || "导入失败");
     return;
@@ -2179,6 +2265,7 @@ function bindEvents() {
     btn.textContent = show ? "隐藏" : "显示";
   });
   document.querySelector("#accountForm").addEventListener("submit", (event) => saveAccount(event).catch((error) => showToast(error.message)));
+  document.querySelector("#accountDialog").addEventListener("close", () => { if (!document.querySelector("#accountDialog").open) accountDialogSession += 1; });
   document.querySelector("#taskForm").addEventListener("submit", (event) => saveTask(event).catch((error) => showToast(error.message)));
   document.querySelector("#taskNoteForm").addEventListener("submit", (event) => saveTaskNotes(event).catch((error) => showToast(error.message)));
   document.querySelector("#transformerUsageForm").addEventListener("submit", (event) => saveTransformerUsage(event).catch((error) => showToast(error.message)));

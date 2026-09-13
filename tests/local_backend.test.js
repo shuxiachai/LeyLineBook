@@ -17,6 +17,7 @@ global.Date = class extends RealDate {
 };
 
 require("fake-indexeddb/auto");
+require("../static/time-contract.js");
 
 // local-backend.js 依赖的最小浏览器环境垫片
 global.location = { hostname: "test.local", search: "" };
@@ -106,7 +107,8 @@ test("PWA v1 upgrade removes legacy credentials", async () => {
   const backup = await api("/api/export", "GET");
   const account = await readRawAccount("legacy-account");
   assert.equal(backup.format, "leylinebook-backup");
-  assert.equal(backup.schemaVersion, 3);
+  assert.equal(backup.schemaVersion, 4);
+  assert.equal(backup.timeContractVersion, 2);
   assert.equal(backup.appVersion, DESKTOP_VERSION);
   assert.equal(Object.hasOwn(account, "credentials"), false);
   await assert.rejects(api("/api/accounts/legacy-account/credentials", "GET"), /手机版不保存账号凭据/);
@@ -114,7 +116,7 @@ test("PWA v1 upgrade removes legacy credentials", async () => {
 });
 
 function secondTab() {
-  const context = { window: {}, location: global.location, document: global.document, indexedDB, IDBKeyRange, crypto: global.crypto, Date };
+  const context = { window: {}, location: global.location, document: global.document, indexedDB, IDBKeyRange, crypto: global.crypto, Date, LEYLINE_TIME: global.LEYLINE_TIME };
   vm.runInNewContext(SOURCE, context);
   return (path, method, body) => context.window.LOCAL_BACKEND.handle(path, { method, body: JSON.stringify(body) });
 }
@@ -200,12 +202,12 @@ test("PWA historical undo and multiple expeditions preserve newer schedules", as
   assert.equal((await api("/api/export", "GET")).data.tasks[0].next_due, before);
   await api(`/api/accounts/${account.id}/task-tags`, "POST", { tag: "探索派遣", enabled: true, notes: ["派遣:15小时"] });
   const expedition = (await api("/api/export", "GET")).data.tasks.find((task) => task.name === "探索派遣");
-  for (const usedAt of ["2026-06-14T04:10", "2026-06-14T04:10", "2026-06-14T19:20"]) {
+  for (const usedAt of ["2026-06-14T04:10+10:00", "2026-06-14T04:10+10:00", "2026-06-14T19:20+10:00"]) {
     await api(`/api/tasks/${expedition.id}/toggle`, "POST", { date: "2026-06-14", completed: true, usedAt });
   }
   const data = (await api("/api/export", "GET")).data;
   assert.equal(data.records.filter((record) => record.task_id === expedition.id).length, 2);
-  assert.equal(data.tasks.find((task) => task.id === expedition.id).next_due, "2026-06-15T10:20");
+  assert.equal(data.tasks.find((task) => task.id === expedition.id).next_due, "2026-06-15T00:20:00Z");
   await api("/api/reset", "POST", {});
 });
 
@@ -227,9 +229,12 @@ test("Service worker activation retains unrelated origin caches", async () => {
   const scope = "https://example.test/LeyLineBook/";
   const deleted = [];
   const listeners = {};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "../static/sw.js"), "utf8"), {
+  const source = fs.readFileSync(path.join(__dirname, "../static/sw.js"), "utf8");
+  const version = source.match(/const CACHE = `\$\{CACHE_PREFIX\}(v\d+)`/)?.[1];
+  assert.ok(version, "SW must declare its scoped cache revision");
+  vm.runInNewContext(source, {
     self: { registration: { scope }, addEventListener: (name, handler) => { listeners[name] = handler; }, clients: { claim() {} } },
-    caches: { keys: async () => ["another-project", "leylinebook-shell-v4", `leylinebook-shell:${scope}:v3`, `leylinebook-shell:${scope}:v5`, "leylinebook-shell:https://example.test/other/:v2"], delete: async (key) => { deleted.push(key); } },
+    caches: { keys: async () => ["another-project", "leylinebook-shell-v4", `leylinebook-shell:${scope}:v3`, `leylinebook-shell:${scope}:${version}`, "leylinebook-shell:https://example.test/other/:v2"], delete: async (key) => { deleted.push(key); } },
   });
   let completed;
   listeners.activate({ waitUntil(promise) { completed = promise; } });
@@ -291,7 +296,7 @@ test("local-backend.js 业务逻辑", async (t) => {
     await api(`/api/tasks/${exp.id}/toggle`, "POST", {
       date: today,
       completed: true,
-      usedAt: `${today}T10:00`,
+      usedAt: `${today}T10:00+10:00`,
     });
     st = await api(`/api/state?date=${today}`, "GET");
     const expDue = st.dueTasks.find((t2) => t2.name === "探索派遣");
@@ -374,7 +379,7 @@ test("local-backend.js 业务逻辑", async (t) => {
   await t.test("新版备份可往返导入，未知版本会被拒绝", async () => {
     const backup = await BE._debug.buildBackup();
     assert.equal(backup.format, "leylinebook-backup");
-    assert.equal(backup.schemaVersion, 3);
+    assert.equal(backup.schemaVersion, 4);
     assert.ok(Array.isArray(backup.data.accounts));
 
     await BE._debug.importBackup(backup);
@@ -509,8 +514,8 @@ test("PWA 边界条件与原子写入", async (t) => {
     await api("/api/import", "POST", {
       accounts: [{ id: "game-day-account", name: "游戏日边界号", active: 1, sort_order: 0 }],
       tasks: [
-        { id: "early-task", account_id: "game-day-account", name: "质变仪", recurrence: "interval", interval_days: 7, next_due: "2026-06-21T02:00", active: 1, sort_order: 2 },
-        { id: "reset-task", account_id: "game-day-account", name: "探索派遣", recurrence: "interval", next_due: "2026-06-21T04:00", active: 1, sort_order: 5 },
+        { id: "early-task", account_id: "game-day-account", name: "质变仪", recurrence: "interval", interval_days: 7, next_due: "2026-06-21T02:00+10:00", active: 1, sort_order: 2 },
+        { id: "reset-task", account_id: "game-day-account", name: "探索派遣", recurrence: "interval", next_due: "2026-06-21T04:00+10:00", active: 1, sort_order: 5 },
       ],
       records: [], customTags: [], carePlans: [], storyTasks: [], groupNotes: [],
     });

@@ -1,25 +1,10 @@
 Option Explicit
 
-Dim shell, fileSystem, appDir, url, http, pythonw, candidates, candidate, command
+Dim shell, fileSystem, appDir, pythonw, candidates, candidate, command
 Set shell = CreateObject("WScript.Shell")
 Set fileSystem = CreateObject("Scripting.FileSystemObject")
 appDir = fileSystem.GetParentFolderName(WScript.ScriptFullName)
-url = "http://127.0.0.1:8765"
-
-On Error Resume Next
-Set http = CreateObject("MSXML2.XMLHTTP")
-http.Open "GET", url & "/api/state", False
-http.Send
-If Err.Number = 0 Then
-    If http.Status = 200 Then
-        http.Open "POST", url & "/api/shutdown", False
-        http.setRequestHeader "Content-Type", "application/json"
-        http.Send "{}"
-        WScript.Sleep 800
-    End If
-End If
-Err.Clear
-On Error GoTo 0
+' app.py owns authenticated instance discovery and shutdown.
 
 candidates = Array( _
     appDir & "\.venv\Scripts\pythonw.exe", _

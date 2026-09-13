@@ -18,6 +18,8 @@ dist/
 task_records.db
 task_records*.db
 task_recorder.log
+update-recovery/
+LeyLineBook-update-recovery-*.txt
 *.log
 
 !demo/task_records.demo.db

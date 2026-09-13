@@ -1,15 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('static', 'static')],
+    datas=[('static', 'static')] + collect_data_files('tzdata'),
     hiddenimports=[
         'webview.platforms.edgechromium',
         'webview.platforms.winforms',
-    ],
+    ] + collect_submodules('tzdata'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -46,6 +46,7 @@ jobs:
           npm test
           node --check static/app.js
           node --check static/local-backend.js
+          node --check static/time-contract.js
           node --check static/sw.js
 
       - name: Install test browser
