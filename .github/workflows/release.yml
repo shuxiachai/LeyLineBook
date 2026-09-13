@@ -120,17 +120,17 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $env:ASSET_NAME" | Set-Content -LiteralPath "$assetPath.sha256" -Encoding ascii -NoNewline
 
-      - name: Publish GitHub Release assets
+      - name: Upload assets to existing draft Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           $assetPath = Join-Path "dist" $env:ASSET_NAME
-          gh release view $env:TAG_NAME *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:TAG_NAME $assetPath "$assetPath.sha256" --clobber
-          } else {
-            gh release create $env:TAG_NAME $assetPath "$assetPath.sha256" --verify-tag --generate-notes --title "LeyLineBook $env:TAG_NAME"
-          }
-          if ($LASTEXITCODE -ne 0) { throw "GitHub Release publication failed." }
+          $releaseJson = gh release view $env:TAG_NAME --json "isDraft,tagName"
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the existing draft Release." }
+          $release = ConvertFrom-Json -InputObject ($releaseJson -join "`n") -NoEnumerate -ErrorAction Stop
+          if ($release -is [array] -or $release -isnot [pscustomobject] -or $release.isDraft -isnot [bool] -or -not $release.isDraft) { throw "Release must be an existing draft." }
+          if ($release.tagName -isnot [string] -or $release.tagName -cne $env:TAG_NAME) { throw "Draft Release tag does not match." }
+          gh release upload $env:TAG_NAME $assetPath "$assetPath.sha256" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Draft Release asset upload failed." }

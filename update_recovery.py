@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import base64
+import ctypes
 import hashlib
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import time
 from contextlib import closing, contextmanager
@@ -30,11 +32,46 @@ MANUAL_RECOVERY_HELP = (
 )
 
 
+def _windows_long_path(path: Path) -> Path:
+    api = ctypes.WinDLL("kernel32", use_last_error=True).GetLongPathNameW
+    api.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+    api.restype = ctypes.c_uint32
+    size = 260
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        length = api(str(path), buffer, size)
+        if not length:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if length < size:
+            return Path(buffer.value)
+        size = length + 1
+
+
 def _absolute_path(value: Path) -> Path:
     path = Path(value)
-    if not path.is_absolute() or path.resolve() != path:
+    if not path.is_absolute() or ".." in path.parts:
         raise ValueError(f"Recovery path must be absolute and must not redirect: {path}")
-    return path
+    canonical = path
+    if os.name == "nt":
+        if any(part.endswith((".", " ")) for part in path.parts[1:]):
+            raise ValueError(f"Recovery path must not contain ambiguous Windows names: {path}")
+        # Inspect the original spelling before resolving: even a missing child may
+        # have a junction/symlink ancestor, and dangling reparse points still exist.
+        existing = Path(path.anchor)
+        for component in (*reversed(path.parents), path):
+            try:
+                info = component.lstat()
+            except FileNotFoundError:
+                break
+            if info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                raise ValueError(f"Recovery path must not redirect through a reparse point: {component}")
+            existing = component
+        # Only Win32-confirmed long-name expansion may differ from the input.
+        canonical = _windows_long_path(existing).joinpath(*path.relative_to(existing).parts)
+    resolved = path.resolve()
+    if resolved != canonical:
+        raise ValueError(f"Recovery path must be absolute and must not redirect: {path}")
+    return resolved
 
 
 def _regular_file(value: Path) -> Path:
@@ -45,6 +82,7 @@ def _regular_file(value: Path) -> Path:
 
 
 def _sqlite_paths(database: Path) -> Path:
+    database = _regular_file(database)
     for suffix in ("", "-wal", "-shm", "-journal"):
         _regular_file(database.with_name(database.name + suffix))
     journal = database.with_name(database.name + "-journal")
@@ -101,6 +139,7 @@ def _snapshot_database(database: Path, snapshot: Path) -> None:
 
 @contextmanager
 def _startup_lock(database: Path):
+    database = _regular_file(database)
     lock_path = _regular_file(database.with_name(f".{database.name}.startup.lock"))
     with lock_path.open("a+b") as lock:
         try:
@@ -118,7 +157,7 @@ def _startup_lock(database: Path):
 
 @contextmanager
 def _startup_connection(database: Path):
-    _sqlite_paths(database)
+    database = _sqlite_paths(database)
     with closing(sqlite3.connect(database.as_uri() + "?mode=rw", uri=True, timeout=5)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=OFF")

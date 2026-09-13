@@ -10,7 +10,7 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 
 版本变更与升级注意事项见 [更新日志](CHANGELOG.md)。
 
-**当前工作区为尚未发布的 3.0.6 本地候选，现有 v3.0.5 EXE 和线上 PWA 不会因本地源码修改而自动更新。** 当前验收范围与结果见 [3.0.6 本地候选验收](RELEASE_READINESS_3.0.6.md)，前一阶段结果见 [项目复核记录](PROJECT_REVIEW_2026-09-13.md)。
+**当前工作区为尚未发布的 3.0.6 候选，正在独立验证分支进行远端 CI 与真实升级验收；现有 v3.0.5 EXE 和线上 PWA 尚未更新。** 当前进度见 [3.0.6 发布验证进度](RELEASE_PROGRESS_3.0.6.md)，历史本地验收见 [3.0.6 本地候选验收](RELEASE_READINESS_3.0.6.md) 和 [项目复核记录](PROJECT_REVIEW_2026-09-13.md)。
 
 若系统缺少 WebView2 运行时（极少见），程序会自动回退到浏览器模式；也可以用 `--browser` 参数强制使用浏览器打开。浏览器模式下关闭所有页面后，后台程序会在约 80 秒内自动退出；任一模式下都可以进入“设置与备份”，点击“关闭程序”立即停止。
 
@@ -133,6 +133,6 @@ python -B -X utf8 scripts/windows_ui_smoke.py
 
 `scripts/real_upgrade_smoke.py` 接收 `--new-exe` 与 `--new-sha256`，核验官方 v3.0.5 旧包后只运行隔离副本，以无界面方式检查首次保护、完整 SQLite 快照、旧程序保存、新写入保全和独立恢复。该脚本不运行真实旧协调器、不伪造界面就绪，也不覆盖完整更新发现与下载。
 
-仓库包含三条 GitHub Actions 流水线：`CI` 在 Windows 上执行双端测试、浏览器回归、PyInstaller 打包、冻结 EXE 时区与认证 API 检查以及启动冒烟；`Release` 在相同测试通过且标签与 `APP_VERSION` 一致时发布 EXE 与同名 `.sha256` 文件，任一外部测试命令失败都会阻止打包发布；`Deploy PWA` 在 `main` 分支的静态资源变更通过其测试后部署 `static/` 到 GitHub Pages。本轮只修改本地配置，没有触发这些远端流水线。
+仓库包含三条 GitHub Actions 流水线：`CI` 在 Windows 上执行双端测试、浏览器回归、PyInstaller 打包、冻结 EXE 时区与认证 API 检查以及启动冒烟；`Release` 负责标签版本校验、测试、EXE 与同名 `.sha256` 文件的构建上传，任一外部测试命令失败都会阻止后续步骤；`Deploy PWA` 在 `main` 分支的静态资源变更通过其测试后部署 `static/` 到 GitHub Pages。当前仅推送独立验证分支并运行 CI，尚未触发正式 Release 或 PWA 部署；各次运行结果见发布验证进度。
 
 数据库、日志、缓存、`node_modules` 和打包结果均不应提交到源码仓库，具体规则见 `.gitignore`。
