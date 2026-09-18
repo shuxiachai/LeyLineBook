@@ -32,7 +32,7 @@
 
 ![PWA 设置与备份界面，包含导出备份、导入备份和导入前快照恢复入口](docs/images/backup-restore.png)
 
-[观看约 60 秒操作演示（MP4，无声）](https://raw.githubusercontent.com/shuxiachai/LeyLineBook/main/docs/media/quick-tour.mp4)：多账号待办 → 完成与撤销 → 号主管理 → 导出与导入备份。
+[下载约60秒操作演示（MP4，无声）](https://raw.githubusercontent.com/shuxiachai/LeyLineBook/main/docs/media/quick-tour.mp4)：多账号待办 → 完成与撤销 → 号主管理 → 导出与导入备份。点击链接下载 MP4 文件后，使用设备上的视频播放器打开；该链接用于下载，不是网页内在线播放入口。
 
 ## 启动
 
