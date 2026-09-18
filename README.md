@@ -1,6 +1,38 @@
 # LeyLineBook / 地脉簿
 
-《原神》（Genshin Impact）多账号任务管理工具，面向同时打理多个账号的玩家和代肝工作室。集中追踪体力、深境螺旋、幻想真境剧诗、危战、剧情任务、限时活动等日常与周期内容，支持桌面端（Windows）与[手机端（PWA）](https://shuxiachai.github.io/LeyLineBook/)。纯本地记录工具，不会连接或操作游戏本体，所有数据仅保存在本机。
+《原神》多账号任务管理工具。把多个号的日常、深渊、剧诗、剧情和限时活动放在一张待办清单里，适合多号玩家与代肝工作室。
+
+- **[打开 PWA](https://shuxiachai.github.io/LeyLineBook/)**
+- **[下载 Windows 最新版](https://github.com/shuxiachai/LeyLineBook/releases/latest)**
+- **[查看使用说明](docs/USAGE.md)**
+
+[作者主页：shuxiachai](https://github.com/shuxiachai) · [版本更新记录](CHANGELOG.md)
+
+> **电脑和手机各自保存数据，不会自动同步。** 换设备时，通过导出、传输和导入 JSON 备份手动迁移。LeyLineBook 只做本地记录，**不会连接或操作游戏本体**，不是自动代肝工具。
+
+## 实际界面
+
+以下是公开版本代码的真实界面截图，所有账号、备注和完成记录均为合成演示数据，不对应真实玩家。
+
+### 多账号任务总览
+
+同时查看各个账号的待办和完成进度，区分已经做完与仍需处理的任务。
+
+![桌面端多账号任务总览，三个演示账号分别显示待办、完成状态与到期提醒](docs/images/multi-account-desktop.png)
+
+### 手机上完成与撤销
+
+完成任务后点一下记录；误点时可撤销。本图截取自真实的“完成后再次点击撤销”操作。
+
+<img src="docs/images/complete-undo-mobile.png" width="390" alt="手机端任务清单，已完成任务带勾，底部提示已撤销记录">
+
+### 导出备份与导入前快照
+
+换设备前先导出备份，再在另一端导入。导入会替换目标设备数据，并非合并；PWA 会保留最近 5 个导入前快照。
+
+![PWA 设置与备份界面，包含导出备份、导入备份和导入前快照恢复入口](docs/images/backup-restore.png)
+
+[观看约 60 秒操作演示（MP4，无声）](https://raw.githubusercontent.com/shuxiachai/LeyLineBook/main/docs/media/quick-tour.mp4)：多账号待办 → 完成与撤销 → 号主管理 → 导出与导入备份。
 
 ## 启动
 
@@ -16,7 +48,7 @@ GitHub Release 提供单文件版 `LeyLineBook-v版本号-Windows-x64.exe`，无
 
 ## 手机版
 
-浏览器打开 **[https://shuxiachai.github.io/LeyLineBook/](https://shuxiachai.github.io/LeyLineBook/)**，菜单选择"添加到主屏幕"即可安装，支持离线使用。手机与电脑数据各自独立保存，可通过导出/导入备份手动同步。手机版不会保存账号、密码或验证码；导入前会自动创建本地快照，最近保留 5 个并可在设置页恢复。
+浏览器打开 **[PWA](https://shuxiachai.github.io/LeyLineBook/)**，菜单选择“添加到主屏幕”或安装应用。首次需联网打开并完成资源缓存，之后可离线使用。手机与电脑数据各自独立保存，没有云端账号或自动同步，需通过导出/导入备份手动迁移。手机版不提供游戏登录账号、密码等凭据的存储功能，请勿把密码或验证码填入普通备注。导入前会自动创建本地快照，最近保留 5 个并可在设置页恢复。清除浏览器网站数据可能删除本地记录，请定期另存备份。
 
 ## 主要功能
 
